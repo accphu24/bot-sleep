@@ -26,7 +26,7 @@ LEADERBOARD_CHANNEL_ID = env_int("LEADERBOARD_CHANNEL_ID", 1546537950806941716)
 
 CURRENCY = os.getenv("CURRENCY", "đ")
 # Tên emoji trong server (vd: minecraft_accept), hoặc dạng đầy đủ <:minecraft_accept:ID>, hoặc emoji thường
-LEGIT_EMOJI = os.getenv("LEGIT_EMOJI", "<:minecraft_accept:1503653699388702913>")
+LEGIT_EMOJI = os.getenv("LEGIT_EMOJI", "<:minecraft_accept:1556987449996218409>")
 LEGIT_NAME = os.getenv("LEGIT_NAME", "legit")   # tên kênh: legit-1, legit-2, ...
 
 # Owner gốc (không thể bị xóa bằng lệnh). Đặt OWNER_IDS="id1,id2" để thay đổi.
@@ -436,7 +436,16 @@ def resolve_legit_emoji(guild):
     raw = LEGIT_EMOJI.strip()
     m = re.fullmatch(r"<(a?):(\w+):(\d+)>", raw)
     if m:
-        return discord.PartialEmoji(name=m.group(2), id=int(m.group(3)), animated=bool(m.group(1)))
+        animated, name, eid = bool(m.group(1)), m.group(2), int(m.group(3))
+        # ưu tiên emoji bot thực sự truy cập được: theo ID, rồi theo tên trong server
+        found = bot.get_emoji(eid) or discord.utils.get(guild.emojis, name=name) or discord.utils.get(bot.emojis, name=name)
+        if found:
+            return found
+        if not _emoji_warned:
+            print(f"[legit] Bot không thấy emoji {name} ({eid}): bot không ở server chứa emoji này. "
+                  f"Hãy thêm emoji tên '{name}' vào server của bot, hoặc mời bot vào server chứa emoji.")
+            _emoji_warned = True
+        return discord.PartialEmoji(name=name, id=eid, animated=animated)
     if raw.isascii() and re.fullmatch(r":?\w+:?", raw):
         name = raw.strip(":")
         found = discord.utils.get(guild.emojis, name=name) or discord.utils.get(bot.emojis, name=name)
