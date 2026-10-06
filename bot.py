@@ -1,0 +1,594 @@
+import os
+import io
+import re
+import time
+import html
+import asyncio
+import discord
+from discord.ext import commands, tasks
+from pymongo import AsyncMongoClient
+
+# ================== CẤU HÌNH (đọc từ biến môi trường) ==================
+def env_int(name, default=0):
+    value = os.getenv(name, "").strip()
+    return int(value) if value else default
+
+
+TOKEN = os.getenv("DISCORD_TOKEN")
+MONGODB_URI = os.getenv("MONGODB_URI") or os.getenv("MONGO_URL")
+MONGODB_DB = os.getenv("MONGODB_DB", "discordbot")
+
+TICKET_CATEGORY_ID = env_int("TICKET_CATEGORY_ID")
+TRANSCRIPT_CHANNEL_ID = env_int("TRANSCRIPT_CHANNEL_ID")
+LEGIT_CHANNEL_ID = env_int("LEGIT_CHANNEL_ID")
+
+LEADERBOARD_CHANNEL_ID = env_int("LEADERBOARD_CHANNEL_ID", 1546537950806941716)
+
+CURRENCY = os.getenv("CURRENCY", "đ")
+# Tên emoji trong server (vd: minecraft_accept), hoặc dạng đầy đủ <:minecraft_accept:ID>, hoặc emoji thường
+LEGIT_EMOJI = os.getenv("LEGIT_EMOJI", "<:minecraft_accept:1503653699388702913>")
+LEGIT_NAME = os.getenv("LEGIT_NAME", "legit")   # tên kênh: legit-1, legit-2, ...
+
+# Owner gốc (không thể bị xóa bằng lệnh). Đặt OWNER_IDS="id1,id2" để thay đổi.
+_env_owners = {int(x) for x in re.split(r"[,\s]+", os.getenv("OWNER_IDS", "")) if x.isdigit()}
+DEFAULT_OWNER_IDS = _env_owners or {846332174734983219, 1473293264613277798}
+
+# Mẫu tin nhắn legit: "+1 legit <@user> nội dung"
+LEGIT_PATTERN = re.compile(r"^\+1\s+legit\s+<@!?\d+>", re.IGNORECASE)
+# Discord cho đổi tên kênh tối đa 2 lần / 10 phút
+RENAME_LIMIT = 2
+RENAME_WINDOW = 10 * 60 + 5
+
+# Bảng xếp hạng chi tiêu
+LB_TITLE = "🏆 BẢNG XẾP HẠNG CHI TIÊU"
+LB_SIZE = 20
+RANK_ICONS = {
+    1: "<:cenar_13221snoopysparkles:1546837411345080362>",
+    2: "<a:cenar_card_success:1546837455947304961>",
+    3: "<a:cenar_tsm_fire:1546837489463853090>",
+}
+ARROW = "<a:cenar_arrow2:1546837463161503834>"
+MONEY = "<:cenar_money:1546837446489014312>"
+
+# Dữ liệu chi tiêu ban đầu (từ BXH cũ), chỉ nạp 1 lần duy nhất
+SEED_SPENDING = [
+    (1426501817025564738, 210_000_000),
+    (1500635091158827069, 4_164_000),
+    (1179690547196207145, 3_576_000),
+    (1528610454648393895, 1_075_000),
+    (1545791712411127939, 1_022_000),
+    (917730708670259242, 999_000),
+    (1473667475722993806, 700_000),
+    (1467937309121974527, 650_000),
+    (1437805894577422467, 493_000),
+    (988024939770708038, 383_000),
+    (1137768162490863678, 199_000),
+    (1536236421541531719, 185_000),
+    (866150151902855169, 167_000),
+    (1490526974605787208, 150_000),
+    (1270072149029289997, 130_000),
+    (1121099474417225769, 119_000),
+    (1533456290469118024, 113_000),
+    (1302844315474858066, 109_000),
+    (731466829201145926, 90_000),
+    (1507576660642238555, 64_000),
+]
+# ======================================================================
+
+if not TOKEN:
+    raise SystemExit("Thiếu biến môi trường DISCORD_TOKEN")
+if not MONGODB_URI:
+    raise SystemExit("Thiếu biến môi trường MONGODB_URI (hoặc MONGO_URL)")
+
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
+
+# ---------- Database (MongoDB) ----------
+mongo = None
+db = None
+
+
+async def get_stat(key):
+    doc = await db.stats.find_one({"_id": key})
+    return doc["value"] if doc else 0
+
+
+async def set_stat(key, value):
+    await db.stats.update_one({"_id": key}, {"$set": {"value": value}}, upsert=True)
+
+
+async def add_stat(key, n=1):
+    await db.stats.update_one({"_id": key}, {"$inc": {"value": n}}, upsert=True)
+
+
+async def add_spending(user_id, amount):
+    await db.spending.update_one({"_id": user_id}, {"$inc": {"total": amount}}, upsert=True)
+    schedule_leaderboard_update()
+
+
+def fmt(n, sign=False):
+    text = f"{n:+,}" if sign else f"{n:,}"
+    return text.replace(",", ".") + CURRENCY
+
+
+# ---------- Phân quyền ----------
+async def has_role(user_id, role):
+    return await db.roles.find_one({"user_id": user_id, "role": role}) is not None
+
+
+async def is_owner(user_id):
+    return await has_role(user_id, "owner")
+
+
+async def is_staff(user_id):
+    return await is_owner(user_id) or await has_role(user_id, "staff")
+
+
+async def all_staff_ids():
+    return await db.roles.distinct("user_id")
+
+
+async def grant_role(user_id, role):
+    await db.roles.update_one(
+        {"user_id": user_id, "role": role}, {"$set": {"user_id": user_id, "role": role}}, upsert=True
+    )
+
+
+def owner_only():
+    async def predicate(ctx):
+        return await is_owner(ctx.author.id)
+    return commands.check(predicate)
+
+
+def parse_id(text):
+    digits = re.sub(r"\D", "", text)
+    if not digits:
+        raise commands.BadArgument("ID không hợp lệ")
+    return int(digits)
+
+
+async def get_ticket_owner(channel_id):
+    doc = await db.tickets.find_one({"_id": channel_id})
+    return doc["user_id"] if doc else None
+
+
+# ---------- Quản lý owner / staff ----------
+@bot.command()
+@owner_only()
+async def addowner(ctx, user_id: parse_id):
+    await grant_role(user_id, "owner")
+    await ctx.send(f"✅ Đã thêm owner: <@{user_id}> (`{user_id}`)")
+
+
+@bot.command()
+@owner_only()
+async def removeowner(ctx, user_id: parse_id):
+    if user_id in DEFAULT_OWNER_IDS:
+        return await ctx.send("❌ Không thể xóa owner gốc.")
+    await db.roles.delete_one({"user_id": user_id, "role": "owner"})
+    await ctx.send(f"✅ Đã xóa owner: <@{user_id}> (`{user_id}`)")
+
+
+@bot.command()
+@owner_only()
+async def addstaff(ctx, user_id: parse_id):
+    await grant_role(user_id, "staff")
+    await ctx.send(f"✅ Đã thêm staff: <@{user_id}> (`{user_id}`)")
+
+
+@bot.command()
+@owner_only()
+async def removestaff(ctx, user_id: parse_id):
+    await db.roles.delete_one({"user_id": user_id, "role": "staff"})
+    await ctx.send(f"✅ Đã xóa staff: <@{user_id}> (`{user_id}`)")
+
+
+@bot.command()
+@owner_only()
+async def stafflist(ctx):
+    owners = await db.roles.distinct("user_id", {"role": "owner"})
+    staffs = await db.roles.distinct("user_id", {"role": "staff"})
+    to_text = lambda ids: ", ".join(f"<@{i}>" for i in ids) or "Không có"
+    await ctx.send(f"**Owner:** {to_text(owners)}\n**Staff:** {to_text(staffs)}")
+
+
+# ---------- Ticket ----------
+class TicketPanel(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Tạo ticket", emoji="🎫", style=discord.ButtonStyle.green, custom_id="ticket:create")
+    async def create(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        row = await db.tickets.find_one({"user_id": interaction.user.id})
+        if row and guild.get_channel(row["_id"]):
+            return await interaction.response.send_message(f"Bạn đã có ticket: <#{row['_id']}>", ephemeral=True)
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+        }
+        for uid in await all_staff_ids():
+            member = guild.get_member(uid)
+            if member:
+                overwrites[member] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True)
+
+        category = guild.get_channel(TICKET_CATEGORY_ID)
+        channel = await guild.create_text_channel(
+            f"ticket-{interaction.user.name}", category=category, overwrites=overwrites
+        )
+        await db.tickets.delete_many({"user_id": interaction.user.id})
+        await db.tickets.insert_one({"_id": channel.id, "user_id": interaction.user.id})
+
+        await channel.send(
+            f"{interaction.user.mention} Chào bạn! Hãy mô tả nhu cầu, staff sẽ hỗ trợ sớm.\n"
+            "Đóng ticket: `.close`"
+        )
+        await interaction.response.send_message(f"Đã tạo ticket: {channel.mention}", ephemeral=True)
+
+
+async def build_transcript(channel):
+    lines = []
+    async for m in channel.history(limit=None, oldest_first=True):
+        t = m.created_at.strftime("%Y-%m-%d %H:%M:%S")
+        content = html.escape(m.content).replace("\n", "<br>")
+        files = "".join(f'<br><a href="{a.url}">[{html.escape(a.filename)}]</a>' for a in m.attachments)
+        lines.append(f"<p><b>{html.escape(str(m.author))}</b> <small>{t}</small><br>{content}{files}</p>")
+    doc = (
+        f"<html><head><meta charset='utf-8'><title>{channel.name}</title></head>"
+        f"<body style='font-family:sans-serif'>{''.join(lines)}</body></html>"
+    )
+    return discord.File(io.BytesIO(doc.encode("utf-8")), filename=f"transcript-{channel.name}.html")
+
+
+async def close_ticket(channel, closed_by, extra=""):
+    owner_id = await get_ticket_owner(channel.id)
+    transcript = await build_transcript(channel)
+    log = channel.guild.get_channel(TRANSCRIPT_CHANNEL_ID)
+    if log:
+        await log.send(
+            f"📄 Ticket `{channel.name}` (chủ: <@{owner_id}>) đóng bởi {closed_by.mention}. {extra}",
+            file=transcript,
+        )
+    await db.tickets.delete_one({"_id": channel.id})
+    await channel.send("Ticket sẽ bị xóa sau 5 giây...")
+    await asyncio.sleep(5)
+    await channel.delete()
+
+
+@bot.command()
+@owner_only()
+async def panel(ctx):
+    """Gửi bảng tạo ticket."""
+    embed = discord.Embed(title="🎫 Hỗ trợ / Mua hàng", description="Bấm nút bên dưới để tạo ticket.", color=0x57F287)
+    await ctx.send(embed=embed, view=TicketPanel())
+    await ctx.message.delete()
+
+
+@bot.command()
+async def close(ctx):
+    owner_id = await get_ticket_owner(ctx.channel.id)
+    if owner_id is None:
+        return await ctx.send("Đây không phải kênh ticket.")
+    if not (await is_staff(ctx.author.id) or ctx.author.id == owner_id):
+        return await ctx.send("Bạn không có quyền đóng ticket này.")
+    await close_ticket(ctx.channel, ctx.author)
+
+
+@bot.command()
+async def done(ctx, amount: int):
+    """.done 100000 -> cộng tiền cho chủ ticket rồi đóng ticket."""
+    owner_id = await get_ticket_owner(ctx.channel.id)
+    if owner_id is None:
+        return await ctx.send("Đây không phải kênh ticket.")
+    if not await is_staff(ctx.author.id):
+        return await ctx.send("Chỉ staff mới dùng được lệnh này.")
+    if amount <= 0:
+        return await ctx.send("Số tiền phải lớn hơn 0.")
+    await add_spending(owner_id, amount)
+    await ctx.send(f"✅ Đã cộng **{fmt(amount)}** cho <@{owner_id}>.")
+    await close_ticket(ctx.channel, ctx.author, extra=f"Số tiền: {fmt(amount)}")
+
+
+# ---------- Bảng xếp hạng ----------
+def lb_line(rank, user_id, total, guild):
+    icon = RANK_ICONS.get(rank, f"`#{rank}`")
+    # người còn trong server thì hiện mention, đã rời thì hiện ID trong ô code
+    who = f"<@{user_id}>" if guild and guild.get_member(user_id) else f"`{user_id}`"
+    return f"{icon} **#{rank}** {who} {ARROW} {MONEY} **{fmt(total)}**"
+
+
+async def build_leaderboard_embed(guild, limit=LB_SIZE):
+    rows = await db.spending.find({"total": {"$gt": 0}}).sort("total", -1).limit(limit).to_list(limit)
+    desc = "\n".join(lb_line(i + 1, r["_id"], r["total"], guild) for i, r in enumerate(rows))
+    embed = discord.Embed(
+        title=LB_TITLE,
+        description=desc or "Chưa có dữ liệu chi tiêu.",
+        color=0xF1C40F,
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.set_footer(text="Tự động cập nhật • Cập nhật lúc")
+    return embed
+
+
+lb_lock = asyncio.Lock()
+_bg_tasks = set()
+
+
+async def update_leaderboard():
+    """Sửa embed BXH trong kênh BXH. Không tìm thấy embed cũ thì gửi embed mới."""
+    if not LEADERBOARD_CHANNEL_ID:
+        return
+    async with lb_lock:
+        try:
+            channel = bot.get_channel(LEADERBOARD_CHANNEL_ID) or await bot.fetch_channel(LEADERBOARD_CHANNEL_ID)
+            embed = await build_leaderboard_embed(channel.guild)
+
+            message = None
+            msg_id = await get_stat("lb_message_id")
+            if msg_id:
+                try:
+                    message = await channel.fetch_message(msg_id)
+                except discord.NotFound:
+                    message = None
+            if message is None:
+                # tìm embed BXH cũ của bot trong các tin nhắn gần đây
+                async for m in channel.history(limit=50):
+                    if m.author.id == bot.user.id and m.embeds and m.embeds[0].title == LB_TITLE:
+                        message = m
+                        break
+
+            if message is not None:
+                await message.edit(embed=embed)
+            else:
+                message = await channel.send(embed=embed)
+            await set_stat("lb_message_id", message.id)
+        except discord.HTTPException as e:
+            print("Lỗi cập nhật BXH:", e)
+
+
+def schedule_leaderboard_update():
+    task = asyncio.create_task(update_leaderboard())
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+
+
+@bot.command(aliases=["lb", "bxh"])
+async def top(ctx):
+    await ctx.send(embed=await build_leaderboard_embed(ctx.guild, 10))
+
+
+@bot.command()
+async def spent(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    doc = await db.spending.find_one({"_id": member.id})
+    await ctx.send(f"{member.mention} đã chi tiêu: **{fmt(doc['total'] if doc else 0)}**")
+
+
+@bot.command()
+@owner_only()
+async def addmoney(ctx, member: discord.Member, amount: int):
+    """Cộng/trừ tiền thủ công (owner)."""
+    await add_spending(member.id, amount)
+    await ctx.send(f"Đã chỉnh {member.mention}: {fmt(amount, sign=True)}")
+
+
+# ---------- Kênh legit ----------
+legit_lock = asyncio.Lock()
+legit_ready = False       # False trong lúc bot đang quét lại kênh legit sau khi khởi động
+legit_pending = []        # tin nhắn đến trong lúc đang quét
+
+
+_emoji_warned = False
+
+
+def resolve_legit_emoji(guild):
+    """Trả về emoji để react: ưu tiên dạng <:tên:id>, rồi tìm theo tên trong server, cuối cùng là emoji thường."""
+    global _emoji_warned
+    raw = LEGIT_EMOJI.strip()
+    m = re.fullmatch(r"<(a?):(\w+):(\d+)>", raw)
+    if m:
+        return discord.PartialEmoji(name=m.group(2), id=int(m.group(3)), animated=bool(m.group(1)))
+    if raw.isascii() and re.fullmatch(r":?\w+:?", raw):
+        name = raw.strip(":")
+        found = discord.utils.get(guild.emojis, name=name) or discord.utils.get(bot.emojis, name=name)
+        if found:
+            return found
+        if not _emoji_warned:
+            print(f"Không tìm thấy emoji '{name}', dùng ✅ thay thế. Hãy đặt LEGIT_EMOJI dạng <:{name}:ID>.")
+            _emoji_warned = True
+        return "✅"
+    return raw
+
+
+async def _process_legit(message):
+    """Xử lý 1 tin nhắn trong kênh legit (gọi khi đã giữ legit_lock). Idempotent nhờ legit_last_id."""
+    if message.id <= await get_stat("legit_last_id"):
+        return
+    if not message.author.bot and LEGIT_PATTERN.match(message.content):
+        await add_stat("legit")
+        emoji = resolve_legit_emoji(message.guild)
+        already = any(r.me and str(r.emoji) == str(emoji) for r in message.reactions)
+        if not already:
+            try:
+                await message.add_reaction(emoji)
+            except discord.HTTPException:
+                pass
+    await set_stat("legit_last_id", message.id)
+
+
+async def scan_legit():
+    """Quét các tin nhắn legit mà bot chưa xử lý (lúc bot tắt). Lần đầu chạy sẽ quét toàn bộ kênh."""
+    global legit_ready
+    channel = bot.get_channel(LEGIT_CHANNEL_ID)
+    if not channel:
+        legit_ready = True
+        return
+    last_id = await get_stat("legit_last_id")
+    after = discord.Object(id=last_id) if last_id else None
+    async for m in channel.history(limit=None, after=after, oldest_first=True):
+        async with legit_lock:
+            await _process_legit(m)
+    # xử lý các tin nhắn đến trong lúc quét, rồi mới mở chế độ xử lý trực tiếp
+    async with legit_lock:
+        legit_ready = True
+        batch = sorted(legit_pending, key=lambda x: x.id)
+        legit_pending.clear()
+        for m in batch:
+            await _process_legit(m)
+    print(f"Quét legit xong, số legit hiện tại: {await get_stat('legit')}")
+
+
+@bot.event
+async def on_message(message):
+    if message.channel.id == LEGIT_CHANNEL_ID:
+        if not legit_ready:
+            legit_pending.append(message)
+        else:
+            async with legit_lock:
+                await _process_legit(message)
+        return
+    if message.author.bot:
+        return
+    await bot.process_commands(message)
+
+
+@tasks.loop(seconds=15)
+async def rename_worker():
+    """Hàng chờ đổi tên: luôn đổi theo số legit mới nhất, chỉ khi chưa chạm giới hạn của Discord."""
+    channel = bot.get_channel(LEGIT_CHANNEL_ID)
+    if not channel:
+        return
+    target = f"{LEGIT_NAME}-{await get_stat('legit')}"
+    if channel.name == target:
+        return
+    now = time.time()
+    recent = await db.renames.count_documents({"ts": {"$gt": now - RENAME_WINDOW}})
+    if recent >= RENAME_LIMIT:
+        return  # đang chờ, vòng sau thử lại
+    try:
+        await channel.edit(name=target)
+        await db.renames.insert_one({"ts": now})
+        print(f"Đã đổi tên kênh: {target}")
+    except discord.HTTPException as e:
+        if e.status == 429:
+            # Discord báo giới hạn: nghỉ thêm 1 chu kỳ đầy đủ
+            await db.renames.insert_many([{"ts": now} for _ in range(RENAME_LIMIT)])
+        else:
+            print("Lỗi đổi tên kênh legit:", e)
+    # dọn các bản ghi cũ
+    await db.renames.delete_many({"ts": {"$lt": now - RENAME_WINDOW}})
+
+
+@bot.command()
+@owner_only()
+async def setlegit(ctx, number: int):
+    """.setlegit 50 -> đặt lại số legit hiện tại."""
+    await set_stat("legit", number)
+    await ctx.send(f"Đã đặt số legit = {number}")
+
+
+# ---------- Help ----------
+@bot.command(aliases=["h", "lenh"])
+async def help(ctx):
+    """Hiện danh sách lệnh, chỉ hiện nhóm lệnh mà người dùng có quyền dùng."""
+    embed = discord.Embed(
+        title="📖 Danh sách lệnh",
+        description="Prefix của bot: **`.`**\nDưới đây là các lệnh bạn có thể sử dụng:",
+        color=0x5865F2,
+    )
+    if bot.user and bot.user.display_avatar:
+        embed.set_thumbnail(url=bot.user.display_avatar.url)
+
+    embed.add_field(
+        name="🎫 Ticket",
+        value=(
+            "`.close` — Đóng ticket hiện tại\n"
+            "*Bấm nút* **Tạo ticket** *ở bảng hỗ trợ để mở ticket mới*"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🏆 Chi tiêu",
+        value=(
+            "`.top` — Bảng xếp hạng chi tiêu (top 10)\n"
+            "`.spent [@người]` — Xem số tiền đã chi tiêu\n"
+            f"BXH tự động cập nhật tại <#{LEADERBOARD_CHANNEL_ID}>"
+        ),
+        inline=False,
+    )
+
+    if await is_staff(ctx.author.id):
+        embed.add_field(
+            name="🛠️ Staff",
+            value="`.done <số tiền>` — Cộng tiền cho chủ ticket và đóng ticket",
+            inline=False,
+        )
+
+    if await is_owner(ctx.author.id):
+        embed.add_field(
+            name="👑 Owner",
+            value=(
+                "`.panel` — Gửi bảng tạo ticket\n"
+                "`.addmoney @người <số>` — Cộng/trừ tiền thủ công\n"
+                "`.setlegit <số>` — Đặt lại số legit\n"
+                "`.addowner <id>` / `.removeowner <id>` — Thêm/xóa owner\n"
+                "`.addstaff <id>` / `.removestaff <id>` — Thêm/xóa staff\n"
+                "`.stafflist` — Xem danh sách owner và staff"
+            ),
+            inline=False,
+        )
+
+    embed.add_field(
+        name="✅ Kênh legit",
+        value=f"Gửi tin theo mẫu `+1 legit @user nội dung` trong <#{LEGIT_CHANNEL_ID}> để bot tự react và cập nhật số legit.",
+        inline=False,
+    )
+    embed.set_footer(text=f"Yêu cầu bởi {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
+    await ctx.send(embed=embed)
+
+
+# ---------- Khởi động ----------
+@bot.event
+async def setup_hook():
+    global mongo, db
+    mongo = AsyncMongoClient(MONGODB_URI)
+    db = mongo[MONGODB_DB]
+    await db.roles.create_index([("user_id", 1), ("role", 1)], unique=True)
+    await db.tickets.create_index("user_id")
+    for uid in DEFAULT_OWNER_IDS:
+        await grant_role(uid, "owner")
+    # nạp dữ liệu chi tiêu từ BXH cũ (chỉ 1 lần, cộng dồn nên không ghi đè dữ liệu có sẵn)
+    if not await get_stat("seeded_spending"):
+        for uid, total in SEED_SPENDING:
+            await db.spending.update_one({"_id": uid}, {"$inc": {"total": total}}, upsert=True)
+        await set_stat("seeded_spending", 1)
+    bot.add_view(TicketPanel())  # giữ nút ticket hoạt động sau khi restart
+
+
+@bot.event
+async def on_ready():
+    print(f"Đã đăng nhập: {bot.user}")
+    if not getattr(bot, "started_once", False):
+        bot.started_once = True
+        await update_leaderboard()
+        await scan_legit()
+        rename_worker.start()
+
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CheckFailure):
+        await ctx.send("❌ Bạn không có quyền dùng lệnh này.")
+    elif isinstance(error, (commands.MissingRequiredArgument, commands.BadArgument)):
+        await ctx.send("❌ Sai cú pháp hoặc ID không hợp lệ.")
+    elif isinstance(error, commands.CommandNotFound):
+        pass
+    else:
+        print("Lỗi lệnh:", error)
+
+
+bot.run(TOKEN)
