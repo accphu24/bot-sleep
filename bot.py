@@ -460,9 +460,40 @@ async def _process_legit(message):
         if not already:
             try:
                 await message.add_reaction(emoji)
-            except discord.HTTPException:
-                pass
+            except discord.HTTPException as e:
+                print(f"[legit] Không react được tin {message.id} bằng {emoji}: {e}")
+                if str(emoji) != "✅":
+                    try:
+                        await message.add_reaction("✅")
+                    except discord.HTTPException as e2:
+                        print(f"[legit] React ✅ dự phòng cũng lỗi: {e2}")
     await set_stat("legit_last_id", message.id)
+
+
+async def open_legit_live():
+    """Bật chế độ xử lý trực tiếp và xử lý các tin nhắn đã bị giữ lại trong lúc quét."""
+    global legit_ready
+    async with legit_lock:
+        legit_ready = True
+        batch = sorted(legit_pending, key=lambda x: x.id)
+        legit_pending.clear()
+        for m in batch:
+            await _process_legit(m)
+
+
+def log_legit_diagnostics():
+    """In ra log thông tin cấu hình kênh legit để dễ tìm lỗi."""
+    if not LEGIT_CHANNEL_ID:
+        print("[legit] CẢNH BÁO: chưa đặt biến LEGIT_CHANNEL_ID, bot sẽ không xử lý kênh legit.")
+        return
+    channel = bot.get_channel(LEGIT_CHANNEL_ID)
+    if channel is None:
+        print(f"[legit] CẢNH BÁO: bot không thấy kênh {LEGIT_CHANNEL_ID} (sai ID hoặc bot thiếu quyền xem kênh).")
+        return
+    perms = channel.permissions_for(channel.guild.me)
+    need = ("view_channel", "read_message_history", "add_reactions", "use_external_emojis")
+    missing = [n for n in need if not getattr(perms, n)]
+    print(f"[legit] Kênh: #{channel.name} | thiếu quyền: {missing or 'không'} | emoji: {resolve_legit_emoji(channel.guild)}")
 
 
 async def scan_legit():
@@ -478,12 +509,7 @@ async def scan_legit():
         async with legit_lock:
             await _process_legit(m)
     # xử lý các tin nhắn đến trong lúc quét, rồi mới mở chế độ xử lý trực tiếp
-    async with legit_lock:
-        legit_ready = True
-        batch = sorted(legit_pending, key=lambda x: x.id)
-        legit_pending.clear()
-        for m in batch:
-            await _process_legit(m)
+    await open_legit_live()
     print(f"Quét legit xong, số legit hiện tại: {await get_stat('legit')}")
 
 
@@ -493,6 +519,8 @@ async def on_message(message):
         if not legit_ready:
             legit_pending.append(message)
         else:
+            if not message.author.bot and not LEGIT_PATTERN.match(message.content):
+                print(f"[legit] Bỏ qua tin {message.id}: không đúng mẫu hoặc nội dung rỗng (content={message.content[:40]!r})")
             async with legit_lock:
                 await _process_legit(message)
         return
@@ -621,7 +649,14 @@ async def on_ready():
     if not getattr(bot, "started_once", False):
         bot.started_once = True
         await update_leaderboard()
-        await scan_legit()
+        log_legit_diagnostics()
+        try:
+            await scan_legit()
+        except Exception as e:
+            print("[legit] Lỗi khi quét kênh legit:", repr(e))
+        finally:
+            if not legit_ready:
+                await open_legit_live()  # đảm bảo tin nhắn mới không bị kẹt trong hàng chờ
         rename_worker.start()
 
 
