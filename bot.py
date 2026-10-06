@@ -376,6 +376,51 @@ async def addmoney(ctx, member: discord.Member, amount: int):
     await ctx.send(f"Đã chỉnh {member.mention}: {fmt(amount, sign=True)}")
 
 
+class ConfirmResetView(discord.ui.View):
+    def __init__(self, author_id):
+        super().__init__(timeout=30)
+        self.author_id = author_id
+        self.message = None
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("Chỉ người dùng lệnh mới bấm được nút này.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Xác nhận reset", emoji="⚠️", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        result = await db.spending.delete_many({})
+        self.stop()
+        await interaction.response.edit_message(
+            content=f"✅ Đã reset BXH ({result.deleted_count} người bị xóa dữ liệu chi tiêu).", view=None
+        )
+        schedule_leaderboard_update()
+
+    @discord.ui.button(label="Hủy", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await interaction.response.edit_message(content="Đã hủy reset BXH.", view=None)
+
+    async def on_timeout(self):
+        if self.message:
+            try:
+                await self.message.edit(content="Hết thời gian, đã hủy reset BXH.", view=None)
+            except discord.HTTPException:
+                pass
+
+
+@bot.command(aliases=["resetlb"])
+@owner_only()
+async def resetbxh(ctx):
+    """Xóa toàn bộ dữ liệu chi tiêu và làm mới BXH (có bước xác nhận)."""
+    view = ConfirmResetView(ctx.author.id)
+    view.message = await ctx.send(
+        "⚠️ Lệnh này sẽ **xóa toàn bộ dữ liệu chi tiêu** của mọi người và không thể hoàn tác. Bạn chắc chắn chứ?",
+        view=view,
+    )
+
+
 # ---------- Kênh legit ----------
 legit_lock = asyncio.Lock()
 legit_ready = False       # False trong lúc bot đang quét lại kênh legit sau khi khởi động
@@ -534,6 +579,7 @@ async def help(ctx):
             value=(
                 "`.panel` — Gửi bảng tạo ticket\n"
                 "`.addmoney @người <số>` — Cộng/trừ tiền thủ công\n"
+                "`.resetbxh` — Reset toàn bộ BXH chi tiêu\n"
                 "`.setlegit <số>` — Đặt lại số legit\n"
                 "`.addowner <id>` / `.removeowner <id>` — Thêm/xóa owner\n"
                 "`.addstaff <id>` / `.removestaff <id>` — Thêm/xóa staff\n"
