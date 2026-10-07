@@ -260,6 +260,11 @@ async def create_ticket(interaction: discord.Interaction, kind: str):
             overwrites[member] = discord.PermissionOverwrite(**perms)
 
     category = guild.get_channel(TICKET_CATEGORY_ID)
+    if not isinstance(category, discord.CategoryChannel):
+        print(f"[ticket] LỖI: không tìm thấy category ID {TICKET_CATEGORY_ID} (sai ID, không phải category, hoặc bot không thấy). Không tạo ticket.")
+        return await interaction.followup.send(
+            "❌ Category ticket chưa được cấu hình đúng, vui lòng báo owner/staff.", ephemeral=True
+        )
     number = await next_ticket_number()
     channel = await guild.create_text_channel(
         f"ticket-{number}",
@@ -753,12 +758,25 @@ async def setup_hook():
     bot.add_view(TicketPanel())  # giữ nút ticket hoạt động sau khi restart
 
 
+def log_ticket_diagnostics():
+    guild_channels = bot.get_channel(TICKET_CATEGORY_ID)
+    if not isinstance(guild_channels, discord.CategoryChannel):
+        print(f"[ticket] CẢNH BÁO: không tìm thấy category ID {TICKET_CATEGORY_ID}. "
+              "Kiểm tra biến TICKET_CATEGORY_ID trên Railway (nên xóa để dùng mặc định) và quyền xem category của bot.")
+        return
+    perms = guild_channels.permissions_for(guild_channels.guild.me)
+    missing = [n for n in ("view_channel", "manage_channels", "send_messages") if not getattr(perms, n)]
+    print(f"[ticket] Category: {guild_channels.name} | thiếu quyền: {missing or 'không'} | "
+          f"số kênh: {len(guild_channels.channels)}/50")
+
+
 @bot.event
 async def on_ready():
     print(f"Đã đăng nhập: {bot.user}")
     if not getattr(bot, "started_once", False):
         bot.started_once = True
         await update_leaderboard()
+        log_ticket_diagnostics()
         log_legit_diagnostics()
         try:
             await scan_legit()
