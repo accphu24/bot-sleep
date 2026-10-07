@@ -33,8 +33,8 @@ _DEFAULT_EMOJIS = (
     "<a:CanhXanh:1556987442869964911>"
 )
 LEGIT_EMOJIS = re.findall(r"<a?:\w+:\d+>|[^\s,]+", os.getenv("LEGIT_EMOJIS", _DEFAULT_EMOJIS))
-# Mẫu tên kênh legit, {n} sẽ được thay bằng số legit hiện tại. Ví dụ: 『✅』legit-35
-LEGIT_NAME_FORMAT = os.getenv("LEGIT_NAME_FORMAT", "『✅』legit-{n}")
+# Mẫu tên kênh legit, {n} sẽ được thay bằng số legit hiện tại. Ví dụ: 『✅』𝙇𝙀𝙂𝙄𝙏-35
+LEGIT_NAME_FORMAT = os.getenv("LEGIT_NAME_FORMAT", "『✅』𝙇𝙀𝙂𝙄𝙏-{n}")
 
 # Owner gốc (không thể bị xóa bằng lệnh). Đặt OWNER_IDS="id1,id2" để thay đổi.
 _env_owners = {int(x) for x in re.split(r"[,\s]+", os.getenv("OWNER_IDS", "")) if x.isdigit()}
