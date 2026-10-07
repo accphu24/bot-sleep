@@ -6,7 +6,7 @@ import html
 import asyncio
 import discord
 from discord.ext import commands, tasks
-from pymongo import AsyncMongoClient
+from pymongo import AsyncMongoClient, ReturnDocument
 
 # ================== CẤU HÌNH (đọc từ biến môi trường) ==================
 def env_int(name, default=0):
@@ -18,7 +18,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 MONGODB_URI = os.getenv("MONGODB_URI") or os.getenv("MONGO_URL")
 MONGODB_DB = os.getenv("MONGODB_DB", "discordbot")
 
-TICKET_CATEGORY_ID = env_int("TICKET_CATEGORY_ID")
+TICKET_CATEGORY_ID = env_int("TICKET_CATEGORY_ID", 1501600820989399080)
 TRANSCRIPT_CHANNEL_ID = env_int("TRANSCRIPT_CHANNEL_ID")
 LEGIT_CHANNEL_ID = env_int("LEGIT_CHANNEL_ID")
 
@@ -103,6 +103,14 @@ async def get_stat(key):
 
 async def set_stat(key, value):
     await db.stats.update_one({"_id": key}, {"$set": {"value": value}}, upsert=True)
+
+
+async def next_ticket_number():
+    """Số thứ tự ticket tăng dần, lưu trong MongoDB (an toàn khi nhiều người bấm cùng lúc)."""
+    doc = await db.stats.find_one_and_update(
+        {"_id": "ticket_counter"}, {"$inc": {"value": 1}}, upsert=True, return_document=ReturnDocument.AFTER
+    )
+    return doc["value"]
 
 
 async def add_stat(key, n=1):
@@ -237,8 +245,9 @@ class TicketPanel(discord.ui.View):
                 overwrites[member] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True)
 
         category = guild.get_channel(TICKET_CATEGORY_ID)
+        number = await next_ticket_number()
         channel = await guild.create_text_channel(
-            f"ticket-{interaction.user.name}", category=category, overwrites=overwrites
+            f"ticket-{number}", category=category, overwrites=overwrites
         )
         await db.tickets.delete_many({"user_id": interaction.user.id})
         await db.tickets.insert_one({"_id": channel.id, "user_id": interaction.user.id})
