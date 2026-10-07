@@ -25,8 +25,14 @@ LEGIT_CHANNEL_ID = env_int("LEGIT_CHANNEL_ID")
 LEADERBOARD_CHANNEL_ID = env_int("LEADERBOARD_CHANNEL_ID", 1546537950806941716)
 
 CURRENCY = os.getenv("CURRENCY", "đ")
-# Tên emoji trong server (vd: minecraft_accept), hoặc dạng đầy đủ <:minecraft_accept:ID>, hoặc emoji thường
-LEGIT_EMOJI = os.getenv("LEGIT_EMOJI", "<:minecraft_accept:1556987449996218409>")
+# Danh sách emoji react theo thứ tự, ngăn cách bằng khoảng trắng hoặc dấu phẩy.
+# Mỗi emoji có thể là <:tên:id>, <a:tên:id> (emoji động), tên emoji trong server, hoặc emoji thường.
+_DEFAULT_EMOJIS = (
+    "<a:CanhXanh:1556987445437014116> "
+    "<:minecraft_accept:1556987449996218409> "
+    "<a:CanhXanh:1556987442869964911>"
+)
+LEGIT_EMOJIS = re.findall(r"<a?:\w+:\d+>|[^\s,]+", os.getenv("LEGIT_EMOJIS", _DEFAULT_EMOJIS))
 LEGIT_NAME = os.getenv("LEGIT_NAME", "legit")   # tên kênh: legit-1, legit-2, ...
 
 # Owner gốc (không thể bị xóa bằng lệnh). Đặt OWNER_IDS="id1,id2" để thay đổi.
@@ -140,6 +146,20 @@ def owner_only():
     async def predicate(ctx):
         return await is_owner(ctx.author.id)
     return commands.check(predicate)
+
+
+def staff_only():
+    async def predicate(ctx):
+        return await is_staff(ctx.author.id)
+    return commands.check(predicate)
+
+
+def parse_amount(text):
+    """Đọc số tiền: chấp nhận 100000, 100.000, 100,000, 100000đ."""
+    cleaned = re.sub(r"[.,_\s]", "", text.lower()).rstrip("đd")
+    if not cleaned.isdigit():
+        raise commands.BadArgument("Số tiền không hợp lệ")
+    return int(cleaned)
 
 
 def parse_id(text):
@@ -278,19 +298,19 @@ async def close(ctx):
     await close_ticket(ctx.channel, ctx.author)
 
 
-@bot.command()
-async def done(ctx, amount: int):
-    """.done 100000 -> cộng tiền cho chủ ticket rồi đóng ticket."""
-    owner_id = await get_ticket_owner(ctx.channel.id)
-    if owner_id is None:
-        return await ctx.send("Đây không phải kênh ticket.")
-    if not await is_staff(ctx.author.id):
-        return await ctx.send("Chỉ staff mới dùng được lệnh này.")
+@bot.command(usage="@user <số tiền>")
+@staff_only()
+async def done(ctx, user: discord.User, amount: parse_amount):
+    """.done @user 100000 -> cộng tiền chi tiêu cho người đó (dùng được ở mọi kênh)."""
+    if user.bot:
+        return await ctx.send("Không thể cộng tiền cho bot.")
     if amount <= 0:
         return await ctx.send("Số tiền phải lớn hơn 0.")
-    await add_spending(owner_id, amount)
-    await ctx.send(f"✅ Đã cộng **{fmt(amount)}** cho <@{owner_id}>.")
-    await close_ticket(ctx.channel, ctx.author, extra=f"Số tiền: {fmt(amount)}")
+    await add_spending(user.id, amount)
+    await ctx.send(f"✅ Đã cộng **{fmt(amount)}** cho {user.mention}.")
+    # dùng trong kênh ticket thì đóng ticket luôn (như trước)
+    if await get_ticket_owner(ctx.channel.id) is not None:
+        await close_ticket(ctx.channel, ctx.author, extra=f"Số tiền: {fmt(amount)} → <@{user.id}>")
 
 
 # ---------- Bảng xếp hạng ----------
@@ -427,35 +447,49 @@ legit_ready = False       # False trong lúc bot đang quét lại kênh legit s
 legit_pending = []        # tin nhắn đến trong lúc đang quét
 
 
-_emoji_warned = False
+_emoji_warned = set()
+_CUSTOM = re.compile(r"<(a?):(\w+):(\d+)>")
 
 
-def resolve_legit_emoji(guild):
-    """Trả về emoji để react: ưu tiên dạng <:tên:id>, rồi tìm theo tên trong server, cuối cùng là emoji thường."""
-    global _emoji_warned
-    raw = LEGIT_EMOJI.strip()
-    m = re.fullmatch(r"<(a?):(\w+):(\d+)>", raw)
+def resolve_emoji(guild, raw, unique_name=True):
+    """Trả về emoji để react. Ưu tiên emoji bot truy cập được theo ID; khi tên là duy nhất thì thử tìm theo tên."""
+    m = _CUSTOM.fullmatch(raw)
     if m:
         animated, name, eid = bool(m.group(1)), m.group(2), int(m.group(3))
-        # ưu tiên emoji bot thực sự truy cập được: theo ID, rồi theo tên trong server
-        found = bot.get_emoji(eid) or discord.utils.get(guild.emojis, name=name) or discord.utils.get(bot.emojis, name=name)
+        found = bot.get_emoji(eid)
+        if not found and unique_name:
+            found = discord.utils.get(guild.emojis, name=name) or discord.utils.get(bot.emojis, name=name)
         if found:
             return found
-        if not _emoji_warned:
+        if raw not in _emoji_warned:
             print(f"[legit] Bot không thấy emoji {name} ({eid}): bot không ở server chứa emoji này. "
-                  f"Hãy thêm emoji tên '{name}' vào server của bot, hoặc mời bot vào server chứa emoji.")
-            _emoji_warned = True
+                  f"Hãy thêm emoji vào server của bot, hoặc mời bot vào server chứa emoji.")
+            _emoji_warned.add(raw)
         return discord.PartialEmoji(name=name, id=eid, animated=animated)
     if raw.isascii() and re.fullmatch(r":?\w+:?", raw):
         name = raw.strip(":")
         found = discord.utils.get(guild.emojis, name=name) or discord.utils.get(bot.emojis, name=name)
         if found:
             return found
-        if not _emoji_warned:
-            print(f"Không tìm thấy emoji '{name}', dùng ✅ thay thế. Hãy đặt LEGIT_EMOJI dạng <:{name}:ID>.")
-            _emoji_warned = True
-        return "✅"
+        if raw not in _emoji_warned:
+            print(f"[legit] Không tìm thấy emoji '{name}', bỏ qua. Hãy đặt dạng <:{name}:ID>.")
+            _emoji_warned.add(raw)
+        return None
     return raw
+
+
+def resolve_legit_emojis(guild):
+    """Danh sách emoji react theo đúng thứ tự cấu hình."""
+    names = [m.group(2) for raw in LEGIT_EMOJIS if (m := _CUSTOM.fullmatch(raw))]
+    emojis = []
+    for raw in LEGIT_EMOJIS:
+        m = _CUSTOM.fullmatch(raw)
+        # hai emoji trùng tên (vd: CanhXanh) thì chỉ dùng ID, không đoán theo tên
+        unique = not m or names.count(m.group(2)) == 1
+        emoji = resolve_emoji(guild, raw, unique)
+        if emoji is not None:
+            emojis.append(emoji)
+    return emojis
 
 
 async def _process_legit(message):
@@ -464,18 +498,22 @@ async def _process_legit(message):
         return
     if not message.author.bot and LEGIT_PATTERN.match(message.content):
         await add_stat("legit")
-        emoji = resolve_legit_emoji(message.guild)
-        already = any(r.me and str(r.emoji) == str(emoji) for r in message.reactions)
-        if not already:
+        emojis = resolve_legit_emojis(message.guild)
+        have = {str(r.emoji) for r in message.reactions if r.me}
+        reacted = any(str(e) in have for e in emojis)
+        for emoji in emojis:  # react lần lượt để đúng thứ tự
+            if str(emoji) in have:
+                continue
             try:
                 await message.add_reaction(emoji)
+                reacted = True
             except discord.HTTPException as e:
                 print(f"[legit] Không react được tin {message.id} bằng {emoji}: {e}")
-                if str(emoji) != "✅":
-                    try:
-                        await message.add_reaction("✅")
-                    except discord.HTTPException as e2:
-                        print(f"[legit] React ✅ dự phòng cũng lỗi: {e2}")
+        if not reacted:
+            try:
+                await message.add_reaction("✅")  # dự phòng khi không emoji nào dùng được
+            except discord.HTTPException as e:
+                print(f"[legit] React ✅ dự phòng cũng lỗi: {e}")
     await set_stat("legit_last_id", message.id)
 
 
@@ -502,7 +540,7 @@ def log_legit_diagnostics():
     perms = channel.permissions_for(channel.guild.me)
     need = ("view_channel", "read_message_history", "add_reactions", "use_external_emojis")
     missing = [n for n in need if not getattr(perms, n)]
-    print(f"[legit] Kênh: #{channel.name} | thiếu quyền: {missing or 'không'} | emoji: {resolve_legit_emoji(channel.guild)}")
+    print(f"[legit] Kênh: #{channel.name} | thiếu quyền: {missing or 'không'} | emoji: {' '.join(str(e) for e in resolve_legit_emojis(channel.guild))}")
 
 
 async def scan_legit():
@@ -606,7 +644,7 @@ async def help(ctx):
     if await is_staff(ctx.author.id):
         embed.add_field(
             name="🛠️ Staff",
-            value="`.done <số tiền>` — Cộng tiền cho chủ ticket và đóng ticket",
+            value="`.done @user <số tiền>` — Cộng tiền chi tiêu cho người đó (dùng ở mọi kênh, trong ticket sẽ đóng ticket)",
             inline=False,
         )
 
@@ -674,7 +712,8 @@ async def on_command_error(ctx, error):
     if isinstance(error, commands.CheckFailure):
         await ctx.send("❌ Bạn không có quyền dùng lệnh này.")
     elif isinstance(error, (commands.MissingRequiredArgument, commands.BadArgument)):
-        await ctx.send("❌ Sai cú pháp hoặc ID không hợp lệ.")
+        usage = ctx.command.usage or ctx.command.signature
+        await ctx.send(f"❌ Sai cú pháp. Cách dùng: `.{ctx.command.name} {usage}`")
     elif isinstance(error, commands.CommandNotFound):
         pass
     else:
