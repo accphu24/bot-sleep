@@ -33,7 +33,8 @@ _DEFAULT_EMOJIS = (
     "<a:CanhXanh:1556987442869964911>"
 )
 LEGIT_EMOJIS = re.findall(r"<a?:\w+:\d+>|[^\s,]+", os.getenv("LEGIT_EMOJIS", _DEFAULT_EMOJIS))
-LEGIT_NAME = os.getenv("LEGIT_NAME", "legit")   # tên kênh: legit-1, legit-2, ...
+# Mẫu tên kênh legit, {n} sẽ được thay bằng số legit hiện tại. Ví dụ: 『✅』legit-35
+LEGIT_NAME_FORMAT = os.getenv("LEGIT_NAME_FORMAT", "『✅』legit-{n}")
 
 # Owner gốc (không thể bị xóa bằng lệnh). Đặt OWNER_IDS="id1,id2" để thay đổi.
 _env_owners = {int(x) for x in re.split(r"[,\s]+", os.getenv("OWNER_IDS", "")) if x.isdigit()}
@@ -591,8 +592,12 @@ async def rename_worker():
     channel = bot.get_channel(LEGIT_CHANNEL_ID)
     if not channel:
         return
-    target = f"{LEGIT_NAME}-{await get_stat('legit')}"
+    target = LEGIT_NAME_FORMAT.replace("{n}", str(await get_stat("legit")))
+    # so với tên đã áp dụng lần trước (Discord có thể chuẩn hóa tên nên không chỉ dựa vào channel.name)
+    if await get_stat("legit_applied_name") == target:
+        return
     if channel.name == target:
+        await set_stat("legit_applied_name", target)
         return
     now = time.time()
     recent = await db.renames.count_documents({"ts": {"$gt": now - RENAME_WINDOW}})
@@ -601,6 +606,7 @@ async def rename_worker():
     try:
         await channel.edit(name=target)
         await db.renames.insert_one({"ts": now})
+        await set_stat("legit_applied_name", target)
         print(f"Đã đổi tên kênh: {target}")
     except discord.HTTPException as e:
         if e.status == 429:
