@@ -19,6 +19,17 @@ MONGODB_URI = os.getenv("MONGODB_URI") or os.getenv("MONGO_URL")
 MONGODB_DB = os.getenv("MONGODB_DB", "discordbot")
 
 TICKET_CATEGORY_ID = env_int("TICKET_CATEGORY_ID", 1501600820989399080)
+# Role được ping (và được cấp quyền xem) khi có ticket mới. Đặt TICKET_PING_ROLE_IDS="id1,id2" để thay đổi.
+TICKET_PING_ROLE_IDS = [
+    int(x) for x in re.split(r"[,\s]+", os.getenv("TICKET_PING_ROLE_IDS", "")) if x.isdigit()
+] or [1501906718253256865, 1504504202444148867]
+# Các loại ticket: key -> (tên hiển thị, icon)
+TICKET_TYPES = {
+    "thu": ("Thu đồ", "📥"),
+    "mua": ("Mua đồ", "🛒"),
+    "acc": ("Mua acc pre", "💎"),
+    "partner": ("Partner", "🤝"),
+}
 TRANSCRIPT_CHANNEL_ID = env_int("TRANSCRIPT_CHANNEL_ID")
 LEGIT_CHANNEL_ID = env_int("LEGIT_CHANNEL_ID")
 
@@ -224,40 +235,70 @@ async def stafflist(ctx):
 
 
 # ---------- Ticket ----------
+async def create_ticket(interaction: discord.Interaction, kind: str):
+    label, icon = TICKET_TYPES[kind]
+    guild = interaction.guild
+    await interaction.response.defer(ephemeral=True)
+
+    row = await db.tickets.find_one({"user_id": interaction.user.id})
+    if row and guild.get_channel(row["_id"]):
+        return await interaction.followup.send(f"Bạn đã có ticket: <#{row['_id']}>", ephemeral=True)
+
+    perms = dict(view_channel=True, send_messages=True, attach_files=True)
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        interaction.user: discord.PermissionOverwrite(**perms),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+    }
+    # role được ping cần xem được kênh thì mới nhận thông báo
+    ping_roles = [r for r in (guild.get_role(rid) for rid in TICKET_PING_ROLE_IDS) if r]
+    for role in ping_roles:
+        overwrites[role] = discord.PermissionOverwrite(**perms)
+    for uid in await all_staff_ids():
+        member = guild.get_member(uid)
+        if member:
+            overwrites[member] = discord.PermissionOverwrite(**perms)
+
+    category = guild.get_channel(TICKET_CATEGORY_ID)
+    number = await next_ticket_number()
+    channel = await guild.create_text_channel(
+        f"ticket-{number}",
+        category=category,
+        overwrites=overwrites,
+        topic=f"{icon} {label} • Chủ ticket: {interaction.user} ({interaction.user.id})",
+    )
+    await db.tickets.delete_many({"user_id": interaction.user.id})
+    await db.tickets.insert_one({"_id": channel.id, "user_id": interaction.user.id, "type": label})
+
+    mentions = " ".join(r.mention for r in ping_roles)
+    await channel.send(
+        f"{interaction.user.mention} {mentions}\n"
+        f"{icon} **Loại ticket: {label}**\n"
+        "Chào bạn! Hãy mô tả nhu cầu, staff sẽ hỗ trợ sớm.\n"
+        "Đóng ticket: `.close`"
+    )
+    await interaction.followup.send(f"Đã tạo ticket: {channel.mention}", ephemeral=True)
+
+
 class TicketPanel(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Tạo ticket", emoji="🎫", style=discord.ButtonStyle.green, custom_id="ticket:create")
-    async def create(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild = interaction.guild
-        row = await db.tickets.find_one({"user_id": interaction.user.id})
-        if row and guild.get_channel(row["_id"]):
-            return await interaction.response.send_message(f"Bạn đã có ticket: <#{row['_id']}>", ephemeral=True)
+    @discord.ui.button(label="Thu đồ", emoji="📥", style=discord.ButtonStyle.success, custom_id="ticket:thu")
+    async def thu(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await create_ticket(interaction, "thu")
 
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True),
-            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
-        }
-        for uid in await all_staff_ids():
-            member = guild.get_member(uid)
-            if member:
-                overwrites[member] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True)
+    @discord.ui.button(label="Mua đồ", emoji="🛒", style=discord.ButtonStyle.primary, custom_id="ticket:mua")
+    async def mua(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await create_ticket(interaction, "mua")
 
-        category = guild.get_channel(TICKET_CATEGORY_ID)
-        number = await next_ticket_number()
-        channel = await guild.create_text_channel(
-            f"ticket-{number}", category=category, overwrites=overwrites
-        )
-        await db.tickets.delete_many({"user_id": interaction.user.id})
-        await db.tickets.insert_one({"_id": channel.id, "user_id": interaction.user.id})
+    @discord.ui.button(label="Mua acc pre", emoji="💎", style=discord.ButtonStyle.primary, custom_id="ticket:acc")
+    async def acc(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await create_ticket(interaction, "acc")
 
-        await channel.send(
-            f"{interaction.user.mention} Chào bạn! Hãy mô tả nhu cầu, staff sẽ hỗ trợ sớm.\n"
-            "Đóng ticket: `.close`"
-        )
-        await interaction.response.send_message(f"Đã tạo ticket: {channel.mention}", ephemeral=True)
+    @discord.ui.button(label="Partner", emoji="🤝", style=discord.ButtonStyle.secondary, custom_id="ticket:partner")
+    async def partner(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await create_ticket(interaction, "partner")
 
 
 async def build_transcript(channel):
@@ -275,12 +316,14 @@ async def build_transcript(channel):
 
 
 async def close_ticket(channel, closed_by, extra=""):
-    owner_id = await get_ticket_owner(channel.id)
+    doc = await db.tickets.find_one({"_id": channel.id}) or {}
+    owner_id = doc.get("user_id")
+    kind = f" [{doc['type']}]" if doc.get("type") else ""
     transcript = await build_transcript(channel)
     log = channel.guild.get_channel(TRANSCRIPT_CHANNEL_ID)
     if log:
         await log.send(
-            f"📄 Ticket `{channel.name}` (chủ: <@{owner_id}>) đóng bởi {closed_by.mention}. {extra}",
+            f"📄 Ticket `{channel.name}`{kind} (chủ: <@{owner_id}>) đóng bởi {closed_by.mention}. {extra}",
             file=transcript,
         )
     await db.tickets.delete_one({"_id": channel.id})
@@ -293,7 +336,12 @@ async def close_ticket(channel, closed_by, extra=""):
 @owner_only()
 async def panel(ctx):
     """Gửi bảng tạo ticket."""
-    embed = discord.Embed(title="🎫 Hỗ trợ / Mua hàng", description="Bấm nút bên dưới để tạo ticket.", color=0x57F287)
+    options = "\n".join(f"{icon} **{label}**" for label, icon in TICKET_TYPES.values())
+    embed = discord.Embed(
+        title="🎫 Hỗ trợ / Giao dịch",
+        description=f"Chọn đúng loại ticket bạn cần bên dưới:\n\n{options}",
+        color=0x57F287,
+    )
     await ctx.send(embed=embed, view=TicketPanel())
     await ctx.message.delete()
 
