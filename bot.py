@@ -4,6 +4,7 @@ import re
 import time
 import html
 import asyncio
+from datetime import date, datetime, timedelta, timezone
 import discord
 from discord.ext import commands, tasks
 from pymongo import AsyncMongoClient, ReturnDocument
@@ -29,11 +30,20 @@ TICKET_TYPES = {
     "mua": ("Mua đồ", "🛒"),
     "acc": ("Mua acc pre", "💎"),
     "partner": ("Partner", "🤝"),
+    "builder": ("Builder", "🧱"),
 }
 TRANSCRIPT_CHANNEL_ID = env_int("TRANSCRIPT_CHANNEL_ID")
 LEGIT_CHANNEL_ID = env_int("LEGIT_CHANNEL_ID")
 
 LEADERBOARD_CHANNEL_ID = env_int("LEADERBOARD_CHANNEL_ID", 1546537950806941716)
+
+# Nhắc đến hạn đóng tiền: mỗi tháng vào ngày PAYMENT_DUE_DAY (giờ Việt Nam, UTC+7), gửi DM cho các ID bên dưới
+VN_TZ = timezone(timedelta(hours=7))
+PAYMENT_DUE_DAY = min(max(env_int("PAYMENT_DUE_DAY", 6), 1), 28)
+PAYMENT_REMIND_HOUR = min(max(env_int("PAYMENT_REMIND_HOUR", 9), 0), 23)
+PAYMENT_REMIND_IDS = [
+    int(x) for x in re.split(r"[,\s]+", os.getenv("PAYMENT_REMIND_IDS", "")) if x.isdigit()
+] or [846332174734983219, 1473293264613277798]
 
 CURRENCY = os.getenv("CURRENCY", "đ")
 # Danh sách emoji react theo thứ tự, ngăn cách bằng khoảng trắng hoặc dấu phẩy.
@@ -304,6 +314,10 @@ class TicketPanel(discord.ui.View):
     @discord.ui.button(label="Partner", emoji="🤝", style=discord.ButtonStyle.secondary, custom_id="ticket:partner")
     async def partner(self, interaction: discord.Interaction, button: discord.ui.Button):
         await create_ticket(interaction, "partner")
+
+    @discord.ui.button(label="Builder", emoji="🧱", style=discord.ButtonStyle.primary, custom_id="ticket:builder")
+    async def builder(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await create_ticket(interaction, "builder")
 
 
 async def build_transcript(channel):
@@ -679,6 +693,83 @@ async def setlegit(ctx, number: int):
     await ctx.send(f"Đã đặt số legit = {number}")
 
 
+# ---------- Nhắc đến hạn đóng tiền hằng tháng ----------
+def next_payment_due(today):
+    due = date(today.year, today.month, PAYMENT_DUE_DAY)
+    if today > due:
+        year, month = (today.year + 1, 1) if today.month == 12 else (today.year, today.month + 1)
+        due = date(year, month, PAYMENT_DUE_DAY)
+    return due
+
+
+def payment_embed(now, test=False):
+    embed = discord.Embed(
+        title="💰 Nhắc đến hạn đóng tiền" + (" (tin nhắn thử)" if test else ""),
+        description=(
+            f"Hôm nay là ngày **{now.day:02d}/{now.month:02d}/{now.year}**, "
+            f"đã đến hạn đóng tiền tháng **{now.month:02d}/{now.year}**.\n"
+            "Vui lòng thanh toán đúng hạn."
+        ),
+        color=0xF1C40F,
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.set_footer(text="Nhắc định kỳ hằng tháng")
+    return embed
+
+
+@tasks.loop(minutes=10)
+async def payment_reminder():
+    """Đến ngày hạn (giờ VN) thì DM nhắc mỗi người đúng 1 lần trong tháng."""
+    now = datetime.now(VN_TZ)
+    if now.day != PAYMENT_DUE_DAY or now.hour < PAYMENT_REMIND_HOUR:
+        return
+    month_key = now.strftime("%Y-%m")
+    for uid in PAYMENT_REMIND_IDS:
+        key = f"payment_sent_{month_key}_{uid}"
+        if await get_stat(key):
+            continue
+        try:
+            user = await bot.fetch_user(uid)
+            await user.send(embed=payment_embed(now))
+        except discord.Forbidden:
+            print(f"[hạn tiền] Không DM được {uid} (đã tắt DM hoặc chặn bot), bỏ qua tháng {month_key}")
+        except discord.HTTPException as e:
+            print(f"[hạn tiền] Lỗi gửi DM cho {uid}, sẽ thử lại: {e}")
+            continue
+        await set_stat(key, 1)
+
+
+@bot.group(invoke_without_command=True)
+@owner_only()
+async def hantien(ctx):
+    """Xem hạn đóng tiền hằng tháng và đếm ngược."""
+    now = datetime.now(VN_TZ)
+    due = next_payment_due(now.date())
+    days_left = (due - now.date()).days
+    countdown = "**Hôm nay là ngày hạn!**" if days_left == 0 else f"còn **{days_left}** ngày"
+    month_key = now.strftime("%Y-%m")
+    lines = []
+    for uid in PAYMENT_REMIND_IDS:
+        sent = await get_stat(f"payment_sent_{month_key}_{uid}")
+        lines.append(f"<@{uid}> — {'✅ đã nhắc tháng này' if sent else '⏳ chưa nhắc tháng này'}")
+    embed = discord.Embed(title="💰 Hạn đóng tiền hằng tháng", color=0xF1C40F)
+    embed.add_field(name="Hạn tiếp theo", value=f"{due.day:02d}/{due.month:02d}/{due.year} ({countdown})", inline=False)
+    embed.add_field(name="Giờ nhắc", value=f"{PAYMENT_REMIND_HOUR:02d}:00 (giờ Việt Nam)", inline=False)
+    embed.add_field(name="Người nhận DM", value="\n".join(lines), inline=False)
+    await ctx.send(embed=embed)
+
+
+@hantien.command(name="test")
+@owner_only()
+async def hantien_test(ctx):
+    """Gửi thử tin nhắc vào DM của người gõ lệnh."""
+    try:
+        await ctx.author.send(embed=payment_embed(datetime.now(VN_TZ), test=True))
+        await ctx.send("✅ Đã gửi tin nhắn thử vào DM của bạn.")
+    except discord.Forbidden:
+        await ctx.send("❌ Không gửi được DM, hãy bật nhận tin nhắn riêng từ thành viên server.")
+
+
 # ---------- Help ----------
 @bot.command(aliases=["h", "lenh"])
 async def help(ctx):
@@ -726,7 +817,9 @@ async def help(ctx):
                 "`.setlegit <số>` — Đặt lại số legit\n"
                 "`.addowner <id>` / `.removeowner <id>` — Thêm/xóa owner\n"
                 "`.addstaff <id>` / `.removestaff <id>` — Thêm/xóa staff\n"
-                "`.stafflist` — Xem danh sách owner và staff"
+                "`.stafflist` — Xem danh sách owner và staff\n"
+                "`.hantien` — Xem hạn đóng tiền hằng tháng (đếm ngày)\n"
+                "`.hantien test` — Gửi thử tin nhắc vào DM của bạn"
             ),
             inline=False,
         )
@@ -786,6 +879,7 @@ async def on_ready():
             if not legit_ready:
                 await open_legit_live()  # đảm bảo tin nhắn mới không bị kẹt trong hàng chờ
         rename_worker.start()
+        payment_reminder.start()
 
 
 @bot.event
