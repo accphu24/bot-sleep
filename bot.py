@@ -415,36 +415,38 @@ lb_lock = asyncio.Lock()
 _bg_tasks = set()
 
 
-async def update_leaderboard():
-    """Sửa embed BXH trong kênh BXH. Không tìm thấy embed cũ thì gửi embed mới."""
+async def update_leaderboard(force_new=False):
+    """Cập nhật embed BXH theo ID tin nhắn đã lưu.
+    - force_new=True (lệnh .bxh): gửi embed mới vào kênh BXH và lưu ID mới nhất.
+    - Chưa có ID nào thì không làm gì, chờ owner gõ .bxh lần đầu.
+    - Tin nhắn BXH đã bị xóa thì gửi lại embed mới và lưu ID mới.
+    Trả về tin nhắn BXH, hoặc None nếu không gửi/sửa được."""
     if not LEADERBOARD_CHANNEL_ID:
-        return
+        return None
     async with lb_lock:
         try:
+            msg_id = await get_stat("lb_message_id")
+            if not msg_id and not force_new:
+                return None
             channel = bot.get_channel(LEADERBOARD_CHANNEL_ID) or await bot.fetch_channel(LEADERBOARD_CHANNEL_ID)
             embed = await build_leaderboard_embed(channel.guild)
 
             message = None
-            msg_id = await get_stat("lb_message_id")
-            if msg_id:
+            if msg_id and not force_new:
                 try:
                     message = await channel.fetch_message(msg_id)
                 except discord.NotFound:
                     message = None
-            if message is None:
-                # tìm embed BXH cũ của bot trong các tin nhắn gần đây
-                async for m in channel.history(limit=50):
-                    if m.author.id == bot.user.id and m.embeds and m.embeds[0].title == LB_TITLE:
-                        message = m
-                        break
 
             if message is not None:
                 await message.edit(embed=embed)
             else:
                 message = await channel.send(embed=embed)
-            await set_stat("lb_message_id", message.id)
+                await set_stat("lb_message_id", message.id)
+            return message
         except discord.HTTPException as e:
             print("Lỗi cập nhật BXH:", e)
+            return None
 
 
 def schedule_leaderboard_update():
@@ -453,9 +455,19 @@ def schedule_leaderboard_update():
     task.add_done_callback(_bg_tasks.discard)
 
 
-@bot.command(aliases=["lb", "bxh"])
+@bot.command(aliases=["lb"])
 async def top(ctx):
     await ctx.send(embed=await build_leaderboard_embed(ctx.guild, 10))
+
+
+@bot.command(name="bxh")
+@owner_only()
+async def bxh(ctx):
+    """Gửi embed BXH mới vào kênh BXH và dùng tin nhắn này làm BXH tự cập nhật từ giờ."""
+    message = await update_leaderboard(force_new=True)
+    if message is None:
+        return await ctx.send("❌ Không gửi được BXH, hãy kiểm tra LEADERBOARD_CHANNEL_ID và quyền gửi tin của bot trong kênh BXH.")
+    await ctx.send(f"✅ Đã gửi BXH vào <#{LEADERBOARD_CHANNEL_ID}>, từ giờ BXH sẽ tự cập nhật theo tin nhắn này: {message.jump_url}")
 
 
 @bot.command()
@@ -813,6 +825,7 @@ async def help(ctx):
             value=(
                 "`.panel` — Gửi bảng tạo ticket\n"
                 "`.addmoney @người <số>` — Cộng/trừ tiền thủ công\n"
+                "`.bxh` — Gửi BXH mới vào kênh BXH (BXH tự cập nhật theo tin nhắn này)\n"
                 "`.resetbxh` — Reset toàn bộ BXH chi tiêu\n"
                 "`.setlegit <số>` — Đặt lại số legit\n"
                 "`.addowner <id>` / `.removeowner <id>` — Thêm/xóa owner\n"
