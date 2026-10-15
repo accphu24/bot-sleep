@@ -4,6 +4,7 @@ import re
 import time
 import html
 import asyncio
+import unicodedata
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 import discord
@@ -54,8 +55,8 @@ SOLD_CATEGORY_ID = env_int("SOLD_CATEGORY_ID")
 SOLD_PREFIX = os.getenv("SOLD_PREFIX", "sold-")
 SOLD_SYNC_PERMISSIONS = env_bool("SOLD_SYNC_PERMISSIONS", True)  # đồng bộ quyền theo category Sold
 
-# Auto role theo mốc chi tiêu: False = giữ role mọi mốc đã đạt, True = chỉ giữ role mốc cao nhất
-AUTOROLE_REPLACE = env_bool("AUTOROLE_REPLACE", False)
+# Auto role theo mốc chi tiêu: True = chỉ giữ role mốc cao nhất (mặc định), False = giữ role mọi mốc đã đạt
+AUTOROLE_REPLACE = env_bool("AUTOROLE_REPLACE", True)
 
 # Kênh hệ thống của bot: không cho xóa/đổi tên bằng lệnh
 PROTECTED_CHANNEL_IDS = {
@@ -876,15 +877,126 @@ async def sync_user_roles(user_id, total):
     await apply_milestone_roles(member, total)
 
 
+# --- Tự quét role trong server: đọc mốc tiền từ tên role ---
+# Ví dụ: "🟣『𝑨𝒎𝒆𝒕𝒉𝒚𝒔𝒕』・𝟏𝑻𝑹–𝟑𝑻𝑹" -> mốc 1.000.000đ; "👑『𝑽𝑰𝑷』・4𝑻𝑹+" -> mốc 4.000.000đ
+# Chữ in đậm/nghiêng kiểu toán học được đổi về chữ thường bằng NFKC. Đơn vị: K = nghìn, TR (hoặc M) = triệu.
+_UNIT = r"(TR|K|M)(?![A-Z])"
+_NUM = r"(\d+(?:[.,]\d+)?)"
+_RANGE_RE = re.compile(rf"{_NUM}\s*(?:{_UNIT})?\s*[–—\-~]\s*{_NUM}\s*{_UNIT}")
+_PLUS_RE = re.compile(rf"{_NUM}\s*{_UNIT}\s*\+")
+_UNIT_MULT = {"K": 1_000, "TR": 1_000_000, "M": 1_000_000}
+
+
+def _to_amount(number, unit):
+    return int(round(float(number.replace(",", ".")) * _UNIT_MULT[unit]))
+
+
+def parse_tier_range(role_name):
+    """Đọc khoảng chi tiêu từ tên role. Trả về (thấp, cao); cao = None với dạng "4TR+".
+    Trả về None nếu tên role không phải role mốc."""
+    text = unicodedata.normalize("NFKC", role_name).upper()
+    m = _RANGE_RE.search(text)
+    if m:
+        n1, u1, n2, u2 = m.groups()
+        return _to_amount(n1, u1 or u2), _to_amount(n2, u2)
+    m = _PLUS_RE.search(text)
+    if m:
+        return _to_amount(m.group(1), m.group(2)), None
+    return None
+
+
+def fmt_range(low, high=None):
+    """0đ – 100.000đ  hoặc  4.000.000đ+ nếu không có cận trên."""
+    return f"{fmt(low)}+" if high is None else f"{fmt(low)} – {fmt(high)}"
+
+
+async def scan_tier_roles(guild):
+    """Quét role trong server, tự tạo/cập nhật/xóa mốc theo tên role.
+    Chỉ đụng tới các mốc do bot tự quét (auto); mốc thêm tay bằng .autorole add chỉ bị ghi đè khi trùng số tiền.
+    Trả về (found, added, updated, removed), found = {mốc thấp: (role, mốc cao)}."""
+    found = {}
+    for role in guild.roles:
+        if role.is_default() or role.managed:
+            continue
+        tier = parse_tier_range(role.name)
+        if tier is None:
+            continue
+        amount, high = tier
+        # trùng mốc thì lấy role nằm cao hơn trong danh sách role
+        if amount not in found or role.position > found[amount][0].position:
+            found[amount] = (role, high)
+
+    existing = {d["_id"]: d for d in await db.milestones.find().to_list(None)}
+    added = updated = removed = 0
+    for amount, doc in existing.items():
+        if doc.get("auto") and amount not in found:
+            await db.milestones.delete_one({"_id": amount})
+            removed += 1
+    for amount, (role, high) in found.items():
+        old = existing.get(amount)
+        if old is None:
+            added += 1
+        elif old.get("role_id") != role.id or not old.get("auto") or old.get("max") != high:
+            updated += 1
+        await db.milestones.update_one(
+            {"_id": amount}, {"$set": {"role_id": role.id, "auto": True, "max": high}}, upsert=True
+        )
+    return found, added, updated, removed
+
+
+async def auto_scan_tier_roles():
+    guild = get_main_guild()
+    if guild is None:
+        return
+    try:
+        found, added, updated, removed = await scan_tier_roles(guild)
+        print(f"[autorole] Quét role: {len(found)} mốc (thêm {added}, cập nhật {updated}, xóa {removed})")
+    except Exception as e:
+        print("[autorole] Lỗi khi quét role:", repr(e))
+
+
+_role_scan_pending = False
+
+
+async def _delayed_role_scan():
+    """Gom nhiều thay đổi role liên tiếp thành 1 lần quét."""
+    global _role_scan_pending
+    if _role_scan_pending:
+        return
+    _role_scan_pending = True
+    await asyncio.sleep(5)
+    _role_scan_pending = False
+    await auto_scan_tier_roles()
+
+
+@bot.event
+async def on_guild_role_create(role):
+    spawn(_delayed_role_scan())
+
+
+@bot.event
+async def on_guild_role_delete(role):
+    spawn(_delayed_role_scan())
+
+
+@bot.event
+async def on_guild_role_update(before, after):
+    if before.name != after.name:
+        spawn(_delayed_role_scan())
+
+
 @bot.group(invoke_without_command=True)
 @owner_only()
 async def autorole(ctx):
     """Xem các mốc chi tiêu và role tương ứng."""
-    milestones = await get_milestones()
-    if milestones:
-        desc = "\n".join(f"**{fmt(amount)}** → <@&{rid}>" for amount, rid in milestones)
+    docs = await db.milestones.find().sort("_id", 1).to_list(None)
+    if docs:
+        desc = "\n".join(
+            f"**{fmt_range(d['_id'], d.get('max'))}** → <@&{d['role_id']}>" + (" 🤖" if d.get("auto") else "") for d in docs
+        )
+        desc += "\n\n🤖 = bot tự quét từ tên role"
     else:
-        desc = "Chưa có mốc nào. Thêm bằng `.autorole add <số tiền> @role`"
+        desc = "Chưa có mốc nào. Dùng `.autorole scan` để bot tự quét role, hoặc `.autorole add <số tiền> @role`"
     mode = "chỉ giữ role của mốc cao nhất" if AUTOROLE_REPLACE else "giữ role của mọi mốc đã đạt"
     embed = discord.Embed(title="🎭 Auto role theo mốc chi tiêu", description=desc, color=0x9B59B6)
     embed.set_footer(text=f"Chế độ: {mode}")
@@ -915,6 +1027,29 @@ async def autorole_remove(ctx, amount: parse_amount):
         await ctx.send(f"✅ Đã xóa mốc **{fmt(amount)}**. Role đã gán trước đó không bị thu hồi.")
     else:
         await ctx.send("Không có mốc nào với số tiền này.")
+
+
+@autorole.command(name="scan")
+@owner_only()
+async def autorole_scan(ctx):
+    """Quét role trong server và tự tạo mốc theo tên role."""
+    found, added, updated, removed = await scan_tier_roles(ctx.guild)
+    if not found:
+        return await ctx.send(
+            "Không tìm thấy role nào có mốc tiền trong tên (ví dụ `…・𝟏𝑻𝑹–𝟑𝑻𝑹`, `…・𝟒𝑻𝑹+`, `…・𝟑𝟎𝟎𝑲–𝟒𝟎𝟎𝑲`)."
+        )
+    lines = []
+    me_top = ctx.guild.me.top_role
+    for amount in sorted(found):
+        role, high = found[amount]
+        warn = " ⚠️" if role >= me_top else ""
+        lines.append(f"**{fmt_range(amount, high)}** → {role.mention}{warn}")
+    embed = discord.Embed(title="🎭 Kết quả quét role", description="\n".join(lines), color=0x9B59B6)
+    embed.set_footer(text=f"Thêm {added} • Cập nhật {updated} • Xóa {removed}")
+    text = ""
+    if any(found[a][0] >= me_top for a in found):
+        text = "⚠️ Có role cao hơn hoặc bằng role cao nhất của bot, bot sẽ không gán được. Hãy kéo role của bot lên trên."
+    await ctx.send(text or None, embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 
 @autorole.command(name="sync")
@@ -1148,7 +1283,8 @@ async def help(ctx):
         name="🎫 Ticket",
         value=(
             "`.close` — Đóng ticket hiện tại\n"
-            "*Bấm nút* **Tạo ticket** *ở bảng hỗ trợ để mở ticket mới*"
+            "Mở ticket bằng cách bấm nút ở bảng hỗ trợ: "
+            + " • ".join(f"{icon} {label}" for label, icon in TICKET_TYPES.values())
         ),
         inline=False,
     )
@@ -1157,7 +1293,8 @@ async def help(ctx):
         value=(
             "`.top` — Bảng xếp hạng chi tiêu (top 10)\n"
             "`.spent [@người]` — Xem số tiền đã chi tiêu\n"
-            f"BXH tự động cập nhật tại <#{LEADERBOARD_CHANNEL_ID}>"
+            f"BXH tự động cập nhật tại <#{LEADERBOARD_CHANNEL_ID}>\n"
+            "Role thành viên tự cập nhật theo tổng chi tiêu"
         ),
         inline=False,
     )
@@ -1198,6 +1335,7 @@ async def help(ctx):
             name="🎭 Auto role (owner)",
             value=(
                 "`.autorole` — Xem các mốc chi tiêu và role\n"
+                "`.autorole scan` — Quét role trong server, tự tạo mốc theo tên role\n"
                 "`.autorole add <số tiền> @role` — Thêm/sửa mốc\n"
                 "`.autorole remove <số tiền>` — Xóa mốc\n"
                 "`.autorole sync` — Áp dụng mốc cho mọi người đã có chi tiêu"
@@ -1261,6 +1399,7 @@ async def on_ready():
         await update_leaderboard()
         log_ticket_diagnostics()
         log_stock_diagnostics()
+        await auto_scan_tier_roles()
         log_legit_diagnostics()
         try:
             await scan_legit()
