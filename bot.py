@@ -5,6 +5,7 @@ import time
 import html
 import asyncio
 from datetime import date, datetime, timedelta, timezone
+from typing import Optional
 import discord
 from discord.ext import commands, tasks
 from pymongo import AsyncMongoClient, ReturnDocument
@@ -36,6 +37,33 @@ TRANSCRIPT_CHANNEL_ID = env_int("TRANSCRIPT_CHANNEL_ID")
 LEGIT_CHANNEL_ID = env_int("LEGIT_CHANNEL_ID")
 
 LEADERBOARD_CHANNEL_ID = env_int("LEADERBOARD_CHANNEL_ID", 1546537950806941716)
+
+
+def env_bool(name, default=False):
+    value = os.getenv(name, "").strip().lower()
+    if not value:
+        return default
+    return value in ("1", "true", "yes", "on", "co", "có")
+
+
+GUILD_ID = env_int("GUILD_ID")  # tùy chọn: ID server (bot chỉ ở 1 server thì không cần)
+
+# Sold / Stock: kênh trong category Stock, gõ "sold" thì chuyển sang category Sold và thêm tiền tố
+STOCK_CATEGORY_ID = env_int("STOCK_CATEGORY_ID")
+SOLD_CATEGORY_ID = env_int("SOLD_CATEGORY_ID")
+SOLD_PREFIX = os.getenv("SOLD_PREFIX", "sold-")
+SOLD_SYNC_PERMISSIONS = env_bool("SOLD_SYNC_PERMISSIONS", True)  # đồng bộ quyền theo category Sold
+
+# Auto role theo mốc chi tiêu: False = giữ role mọi mốc đã đạt, True = chỉ giữ role mốc cao nhất
+AUTOROLE_REPLACE = env_bool("AUTOROLE_REPLACE", False)
+
+# Kênh hệ thống của bot: không cho xóa/đổi tên bằng lệnh
+PROTECTED_CHANNEL_IDS = {
+    cid for cid in (
+        LEGIT_CHANNEL_ID, LEADERBOARD_CHANNEL_ID, TRANSCRIPT_CHANNEL_ID,
+        TICKET_CATEGORY_ID, STOCK_CATEGORY_ID, SOLD_CATEGORY_ID,
+    ) if cid
+}
 
 # Nhắc đến hạn đóng tiền: mỗi tháng vào ngày PAYMENT_DUE_DAY (giờ Việt Nam, UTC+7), gửi DM cho các ID bên dưới
 VN_TZ = timezone(timedelta(hours=7))
@@ -140,8 +168,12 @@ async def add_stat(key, n=1):
 
 
 async def add_spending(user_id, amount):
-    await db.spending.update_one({"_id": user_id}, {"$inc": {"total": amount}}, upsert=True)
+    doc = await db.spending.find_one_and_update(
+        {"_id": user_id}, {"$inc": {"total": amount}}, upsert=True, return_document=ReturnDocument.AFTER
+    )
     schedule_leaderboard_update()
+    spawn(sync_user_roles(user_id, doc["total"]))
+    return doc["total"]
 
 
 def fmt(n, sign=False):
@@ -415,6 +447,14 @@ lb_lock = asyncio.Lock()
 _bg_tasks = set()
 
 
+def spawn(coro):
+    """Chạy coroutine nền và giữ tham chiếu để không bị thu hồi giữa chừng."""
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    return task
+
+
 async def update_leaderboard(force_new=False):
     """Cập nhật embed BXH theo ID tin nhắn đã lưu.
     - force_new=True (lệnh .bxh): gửi embed mới vào kênh BXH và lưu ID mới nhất.
@@ -662,6 +702,8 @@ async def on_message(message):
         return
     if message.author.bot:
         return
+    if message.guild and await handle_sold(message):
+        return
     await bot.process_commands(message)
 
 
@@ -782,6 +824,314 @@ async def hantien_test(ctx):
         await ctx.send("❌ Không gửi được DM, hãy bật nhận tin nhắn riêng từ thành viên server.")
 
 
+# ---------- Auto role theo mốc chi tiêu ----------
+def get_main_guild():
+    if GUILD_ID:
+        return bot.get_guild(GUILD_ID)
+    return bot.guilds[0] if bot.guilds else None
+
+
+async def get_milestones():
+    docs = await db.milestones.find().sort("_id", 1).to_list(None)
+    return [(d["_id"], d["role_id"]) for d in docs]
+
+
+async def apply_milestone_roles(member, total, milestones=None):
+    """Gán role theo mốc chi tiêu. Trả về True nếu có thay đổi role."""
+    if milestones is None:
+        milestones = await get_milestones()
+    guild = member.guild
+    tiers = [(amount, guild.get_role(rid)) for amount, rid in milestones]
+    tiers = [(a, r) for a, r in tiers if r]
+    reached = [r for a, r in tiers if total >= a]
+    if not reached:
+        return False
+    wanted = reached[-1:] if AUTOROLE_REPLACE else reached
+    to_add = [r for r in wanted if r not in member.roles]
+    to_remove = []
+    if AUTOROLE_REPLACE:
+        tier_roles = {r for _, r in tiers}
+        to_remove = [r for r in member.roles if r in tier_roles and r not in wanted]
+    try:
+        if to_add:
+            await member.add_roles(*to_add, reason="Auto role theo mốc chi tiêu")
+        if to_remove:
+            await member.remove_roles(*to_remove, reason="Auto role theo mốc chi tiêu")
+    except discord.HTTPException as e:
+        print(f"[autorole] Không gán được role cho {member} (kiểm tra quyền Manage Roles và thứ tự role của bot): {e}")
+        return False
+    return bool(to_add or to_remove)
+
+
+async def sync_user_roles(user_id, total):
+    guild = get_main_guild()
+    if guild is None:
+        return
+    member = guild.get_member(user_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(user_id)
+        except discord.HTTPException:
+            return  # người này không còn trong server
+    await apply_milestone_roles(member, total)
+
+
+@bot.group(invoke_without_command=True)
+@owner_only()
+async def autorole(ctx):
+    """Xem các mốc chi tiêu và role tương ứng."""
+    milestones = await get_milestones()
+    if milestones:
+        desc = "\n".join(f"**{fmt(amount)}** → <@&{rid}>" for amount, rid in milestones)
+    else:
+        desc = "Chưa có mốc nào. Thêm bằng `.autorole add <số tiền> @role`"
+    mode = "chỉ giữ role của mốc cao nhất" if AUTOROLE_REPLACE else "giữ role của mọi mốc đã đạt"
+    embed = discord.Embed(title="🎭 Auto role theo mốc chi tiêu", description=desc, color=0x9B59B6)
+    embed.set_footer(text=f"Chế độ: {mode}")
+    await ctx.send(embed=embed)
+
+
+@autorole.command(name="add")
+@owner_only()
+async def autorole_add(ctx, amount: parse_amount, role: discord.Role):
+    """.autorole add 1000000 @VIP"""
+    if amount <= 0:
+        return await ctx.send("Số tiền phải lớn hơn 0.")
+    if role.is_default() or role.managed:
+        return await ctx.send("❌ Không thể dùng role này (@everyone hoặc role của bot/tích hợp).")
+    await db.milestones.update_one({"_id": amount}, {"$set": {"role_id": role.id}}, upsert=True)
+    text = f"✅ Chi tiêu đạt **{fmt(amount)}** sẽ nhận role {role.mention}."
+    if role >= ctx.guild.me.top_role:
+        text += "\n⚠️ Role này cao hơn hoặc bằng role cao nhất của bot, bot sẽ không gán được. Hãy kéo role của bot lên trên role này."
+    await ctx.send(text, allowed_mentions=discord.AllowedMentions.none())
+
+
+@autorole.command(name="remove")
+@owner_only()
+async def autorole_remove(ctx, amount: parse_amount):
+    """.autorole remove 1000000"""
+    result = await db.milestones.delete_one({"_id": amount})
+    if result.deleted_count:
+        await ctx.send(f"✅ Đã xóa mốc **{fmt(amount)}**. Role đã gán trước đó không bị thu hồi.")
+    else:
+        await ctx.send("Không có mốc nào với số tiền này.")
+
+
+@autorole.command(name="sync")
+@owner_only()
+async def autorole_sync(ctx):
+    """Áp dụng các mốc cho tất cả người đã có dữ liệu chi tiêu."""
+    milestones = await get_milestones()
+    if not milestones:
+        return await ctx.send("Chưa có mốc nào để đồng bộ.")
+    status = await ctx.send("⏳ Đang đồng bộ role...")
+    changed = 0
+    async for doc in db.spending.find({"total": {"$gt": 0}}):
+        member = ctx.guild.get_member(doc["_id"])
+        if member and await apply_milestone_roles(member, doc["total"], milestones):
+            changed += 1
+    await status.edit(content=f"✅ Đã đồng bộ xong, {changed} người được cập nhật role.")
+
+
+# ---------- Sold / Stock ----------
+def sold_channel_name(name):
+    return name if name.startswith(SOLD_PREFIX) else (SOLD_PREFIX + name)[:100]
+
+
+def stock_channel_name(name):
+    if name.startswith(SOLD_PREFIX) and len(name) > len(SOLD_PREFIX):
+        return name[len(SOLD_PREFIX):]
+    return name
+
+
+async def handle_sold(message):
+    """Staff gõ 'sold' trong kênh thuộc category Stock thì chuyển kênh sang Sold. Trả về True nếu đã xử lý."""
+    if not STOCK_CATEGORY_ID or not SOLD_CATEGORY_ID:
+        return False
+    if message.content.strip().lower() != "sold":
+        return False
+    channel = message.channel
+    if not isinstance(channel, discord.TextChannel) or channel.category_id != STOCK_CATEGORY_ID:
+        return False
+    if not await is_staff(message.author.id):
+        return False  # người thường gõ sold thì bỏ qua
+    sold_category = message.guild.get_channel(SOLD_CATEGORY_ID)
+    if not isinstance(sold_category, discord.CategoryChannel):
+        print(f"[sold] LỖI: không tìm thấy category Sold ID {SOLD_CATEGORY_ID}")
+        await channel.send("❌ Chưa cấu hình đúng category Sold, vui lòng báo owner.")
+        return True
+    try:
+        await channel.send("🔴 **SOLD** — mặt hàng đã bán hết, kênh được chuyển sang mục Sold.")
+        await channel.edit(
+            category=sold_category,
+            name=sold_channel_name(channel.name),
+            sync_permissions=SOLD_SYNC_PERMISSIONS,
+            reason=f"Sold bởi {message.author}",
+        )
+    except discord.HTTPException as e:
+        print(f"[sold] Không chuyển được kênh {channel.id}: {e}")
+        await channel.send(f"❌ Không chuyển được kênh: {e}")
+    return True
+
+
+@bot.command(name="stock")
+@staff_only()
+async def stock_cmd(ctx):
+    """Đưa kênh đang ở Sold về lại Stock (dùng khi lỡ gõ sold nhầm)."""
+    channel = ctx.channel
+    if not isinstance(channel, discord.TextChannel) or channel.category_id != SOLD_CATEGORY_ID:
+        return await ctx.send("Lệnh này chỉ dùng trong kênh đang nằm ở mục Sold.")
+    stock_category = ctx.guild.get_channel(STOCK_CATEGORY_ID)
+    if not isinstance(stock_category, discord.CategoryChannel):
+        return await ctx.send("❌ Chưa cấu hình đúng category Stock, vui lòng báo owner.")
+    try:
+        await ctx.send("🟢 Kênh được đưa về lại mục Stock.")
+        await channel.edit(
+            category=stock_category,
+            name=stock_channel_name(channel.name),
+            sync_permissions=SOLD_SYNC_PERMISSIONS,
+            reason=f"Đưa về Stock bởi {ctx.author}",
+        )
+    except discord.HTTPException as e:
+        await ctx.send(f"❌ Không chuyển được kênh: {e}")
+
+
+def log_stock_diagnostics():
+    if not STOCK_CATEGORY_ID or not SOLD_CATEGORY_ID:
+        print("[sold] CẢNH BÁO: chưa đặt STOCK_CATEGORY_ID / SOLD_CATEGORY_ID, tính năng sold/stock đang tắt.")
+        return
+    for label, cid in (("Stock", STOCK_CATEGORY_ID), ("Sold", SOLD_CATEGORY_ID)):
+        ch = bot.get_channel(cid)
+        found = ch.name if isinstance(ch, discord.CategoryChannel) else "KHÔNG TÌM THẤY"
+        print(f"[sold] Category {label}: {found}")
+
+
+# ---------- Quản lý kênh ----------
+class ConfirmActionView(discord.ui.View):
+    def __init__(self, author_id, action, working_text):
+        super().__init__(timeout=30)
+        self.author_id = author_id
+        self.action = action
+        self.working_text = working_text
+        self.message = None
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("Chỉ người dùng lệnh mới bấm được nút này.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Xác nhận", emoji="⚠️", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await interaction.response.edit_message(content=self.working_text, view=None)
+        try:
+            await self.action()
+        except discord.HTTPException as e:
+            try:
+                await interaction.followup.send(f"❌ Lỗi: {e}", ephemeral=True)
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.button(label="Hủy", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await interaction.response.edit_message(content="Đã hủy.", view=None)
+
+    async def on_timeout(self):
+        if self.message:
+            try:
+                await self.message.edit(content="Hết thời gian, đã hủy.", view=None)
+            except discord.HTTPException:
+                pass
+
+
+@bot.command(name="taokenh")
+@owner_only()
+async def taokenh(ctx, name: str, category: Optional[discord.CategoryChannel] = None):
+    """.taokenh ten-kenh [category] — mặc định tạo trong category của kênh hiện tại."""
+    category = category or ctx.channel.category
+    try:
+        channel = await ctx.guild.create_text_channel(name, category=category, reason=f"Tạo bởi {ctx.author}")
+    except discord.HTTPException as e:
+        return await ctx.send(f"❌ Không tạo được kênh: {e}")
+    await ctx.send(f"✅ Đã tạo kênh {channel.mention}")
+
+
+@bot.command(name="xoakenh")
+@owner_only()
+async def xoakenh(ctx, channel: Optional[discord.TextChannel] = None):
+    """.xoakenh [#kênh] — xóa kênh (có bước xác nhận), mặc định là kênh hiện tại."""
+    channel = channel or ctx.channel
+    if channel.id in PROTECTED_CHANNEL_IDS:
+        return await ctx.send("❌ Đây là kênh hệ thống của bot, không xóa bằng lệnh này.")
+
+    async def action():
+        await channel.delete(reason=f"Xóa bởi {ctx.author}")
+
+    view = ConfirmActionView(ctx.author.id, action, f"🗑️ Đang xóa kênh {channel.name}...")
+    view.message = await ctx.send(f"⚠️ Xóa kênh **{channel.name}**? Không thể hoàn tác.", view=view)
+
+
+@bot.command(name="doiten")
+@owner_only()
+async def doiten(ctx, channel: Optional[discord.TextChannel], *, name: str):
+    """.doiten [#kênh] <tên mới> — mặc định đổi tên kênh hiện tại."""
+    channel = channel or ctx.channel
+    if channel.id in PROTECTED_CHANNEL_IDS:
+        return await ctx.send("❌ Đây là kênh hệ thống của bot, không đổi tên bằng lệnh này.")
+    old_name = channel.name
+    try:
+        await channel.edit(name=name, reason=f"Đổi tên bởi {ctx.author}")
+    except discord.HTTPException as e:
+        return await ctx.send(f"❌ Không đổi được tên: {e}")
+    await ctx.send(f"✅ Đã đổi tên `{old_name}` → {channel.mention}")
+
+
+@bot.command(name="lock")
+@staff_only()
+async def lock(ctx, channel: Optional[discord.TextChannel] = None):
+    """.lock [#kênh] — khóa chat với @everyone."""
+    channel = channel or ctx.channel
+    overwrite = channel.overwrites_for(ctx.guild.default_role)
+    overwrite.send_messages = False
+    try:
+        await channel.set_permissions(ctx.guild.default_role, overwrite=overwrite, reason=f"Khóa bởi {ctx.author}")
+    except discord.HTTPException as e:
+        return await ctx.send(f"❌ Không khóa được kênh: {e}")
+    await ctx.send(f"🔒 Đã khóa chat {channel.mention}")
+
+
+@bot.command(name="unlock")
+@staff_only()
+async def unlock(ctx, channel: Optional[discord.TextChannel] = None):
+    """.unlock [#kênh] — mở khóa chat."""
+    channel = channel or ctx.channel
+    overwrite = channel.overwrites_for(ctx.guild.default_role)
+    overwrite.send_messages = None  # trả về mặc định theo category
+    try:
+        await channel.set_permissions(
+            ctx.guild.default_role, overwrite=None if overwrite.is_empty() else overwrite,
+            reason=f"Mở khóa bởi {ctx.author}",
+        )
+    except discord.HTTPException as e:
+        return await ctx.send(f"❌ Không mở khóa được kênh: {e}")
+    await ctx.send(f"🔓 Đã mở khóa chat {channel.mention}")
+
+
+@bot.command(name="clear", aliases=["purge"])
+@staff_only()
+async def clear(ctx, amount: int):
+    """.clear <số> — dọn tối đa 100 tin nhắn gần nhất (bỏ qua tin đã ghim)."""
+    if not 1 <= amount <= 100:
+        return await ctx.send("Số tin nhắn phải từ 1 đến 100.")
+    try:
+        deleted = await ctx.channel.purge(limit=amount + 1, check=lambda m: not m.pinned)
+    except discord.HTTPException as e:
+        return await ctx.send(f"❌ Không dọn được tin nhắn: {e}")
+    await ctx.send(f"🧹 Đã dọn {max(len(deleted) - 1, 0)} tin nhắn.", delete_after=5)
+
+
 # ---------- Help ----------
 @bot.command(aliases=["h", "lenh"])
 async def help(ctx):
@@ -815,7 +1165,13 @@ async def help(ctx):
     if await is_staff(ctx.author.id):
         embed.add_field(
             name="🛠️ Staff",
-            value="`.done @user <số tiền>` — Cộng tiền chi tiêu cho người đó (dùng ở mọi kênh, trong ticket sẽ đóng ticket)",
+            value=(
+                "`.done @user <số tiền>` — Cộng tiền chi tiêu cho người đó (dùng ở mọi kênh, trong ticket sẽ đóng ticket)\n"
+                "`sold` — Gõ trong kênh Stock để chuyển kênh sang Sold\n"
+                "`.stock` — Gõ trong kênh Sold để đưa về lại Stock\n"
+                "`.lock [#kênh]` / `.unlock [#kênh]` — Khóa/mở khóa chat\n"
+                "`.clear <số>` — Dọn tối đa 100 tin nhắn gần nhất"
+            ),
             inline=False,
         )
 
@@ -833,6 +1189,27 @@ async def help(ctx):
                 "`.stafflist` — Xem danh sách owner và staff\n"
                 "`.hantien` — Xem hạn đóng tiền hằng tháng (đếm ngày)\n"
                 "`.hantien test` — Gửi thử tin nhắc vào DM của bạn"
+            ),
+            inline=False,
+        )
+
+    if await is_owner(ctx.author.id):
+        embed.add_field(
+            name="🎭 Auto role (owner)",
+            value=(
+                "`.autorole` — Xem các mốc chi tiêu và role\n"
+                "`.autorole add <số tiền> @role` — Thêm/sửa mốc\n"
+                "`.autorole remove <số tiền>` — Xóa mốc\n"
+                "`.autorole sync` — Áp dụng mốc cho mọi người đã có chi tiêu"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🧰 Quản lý kênh (owner)",
+            value=(
+                "`.taokenh <tên> [category]` — Tạo kênh mới\n"
+                "`.xoakenh [#kênh]` — Xóa kênh (có xác nhận)\n"
+                "`.doiten [#kênh] <tên mới>` — Đổi tên kênh"
             ),
             inline=False,
         )
@@ -883,6 +1260,7 @@ async def on_ready():
         bot.started_once = True
         await update_leaderboard()
         log_ticket_diagnostics()
+        log_stock_diagnostics()
         log_legit_diagnostics()
         try:
             await scan_legit()
