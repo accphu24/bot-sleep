@@ -8,6 +8,7 @@ import unicodedata
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 from pymongo import AsyncMongoClient, ReturnDocument
 
@@ -1152,6 +1153,19 @@ async def stock_cmd(ctx):
         await ctx.send(f"❌ Không chuyển được kênh: {e}")
 
 
+async def sync_slash_commands():
+    """Đưa các lệnh slash vào server ngay (không phải chờ lệnh global lan truyền)."""
+    guild = get_main_guild()
+    if guild is None:
+        return
+    try:
+        bot.tree.copy_global_to(guild=guild)
+        synced = await bot.tree.sync(guild=guild)
+        print(f"[slash] Đã đồng bộ {len(synced)} lệnh slash: {', '.join('/' + c.name for c in synced)}")
+    except discord.HTTPException as e:
+        print("[slash] Lỗi đồng bộ lệnh slash (bot cần được mời với scope applications.commands):", e)
+
+
 def log_stock_diagnostics():
     if not STOCK_CATEGORY_ID or not SOLD_CATEGORY_ID:
         print("[sold] CẢNH BÁO: chưa đặt STOCK_CATEGORY_ID / SOLD_CATEGORY_ID, tính năng sold/stock đang tắt.")
@@ -1206,9 +1220,11 @@ class CategoryPickView(discord.ui.View):
     """Cho người dùng chọn category khi tạo kênh (có chuyển trang nếu server nhiều hơn 24 category)."""
     PAGE_SIZE = 24
 
-    def __init__(self, ctx, name, categories):
+    def __init__(self, guild, author, channel, name, categories):
         super().__init__(timeout=60)
-        self.ctx = ctx
+        self.guild = guild
+        self.author = author
+        self.channel = channel  # kênh nơi gõ lệnh, dùng để đánh dấu "category hiện tại"
         self.name = name
         self.categories = categories
         self.page = 0
@@ -1228,7 +1244,7 @@ class CategoryPickView(discord.ui.View):
     def render(self):
         self.clear_items()
         chunk = self.categories[self.page * self.PAGE_SIZE:(self.page + 1) * self.PAGE_SIZE]
-        current = self.ctx.channel.category
+        current = getattr(self.channel, "category", None)
         select = discord.ui.Select(
             placeholder="Chọn category...",
             options=[
@@ -1261,7 +1277,7 @@ class CategoryPickView(discord.ui.View):
         self.add_item(cancel_btn)
 
     async def interaction_check(self, interaction: discord.Interaction):
-        if interaction.user.id != self.ctx.author.id:
+        if interaction.user.id != self.author.id:
             await interaction.response.send_message("Chỉ người dùng lệnh mới chọn được.", ephemeral=True)
             return False
         return True
@@ -1270,8 +1286,8 @@ class CategoryPickView(discord.ui.View):
         self.stop()
         await interaction.response.defer()
         try:
-            channel = await self.ctx.guild.create_text_channel(
-                self.name, category=category, reason=f"Tạo bởi {self.ctx.author}"
+            channel = await self.guild.create_text_channel(
+                self.name, category=category, reason=f"Tạo bởi {self.author}"
             )
         except discord.HTTPException as e:
             return await interaction.edit_original_response(content=f"❌ Không tạo được kênh: {e}", view=None)
@@ -1279,7 +1295,7 @@ class CategoryPickView(discord.ui.View):
         await interaction.edit_original_response(content=f"✅ Đã tạo kênh {channel.mention} {where}", view=None)
 
     async def on_select(self, interaction: discord.Interaction):
-        category = self.ctx.guild.get_channel(int(interaction.data["values"][0]))
+        category = self.guild.get_channel(int(interaction.data["values"][0]))
         if not isinstance(category, discord.CategoryChannel):
             self.stop()
             return await interaction.response.edit_message(content="❌ Category này không còn tồn tại.", view=None)
@@ -1313,7 +1329,9 @@ class CategoryPickView(discord.ui.View):
 @bot.command(name="taokenh")
 @owner_only()
 async def taokenh(ctx, *, name: str):
-    """.taokenh <tên kênh> — bot hiện danh sách category để bạn chọn nơi tạo kênh."""
+    """.taokenh <tên kênh> — tạo kênh, tự thêm ✅ vào đầu tên, bot cho chọn category."""
+    if not name.startswith(STOCK_MARK):
+        name = (STOCK_MARK + name)[:100]
     categories = list(ctx.guild.categories)
     if not categories:
         try:
@@ -1321,8 +1339,27 @@ async def taokenh(ctx, *, name: str):
         except discord.HTTPException as e:
             return await ctx.send(f"❌ Không tạo được kênh: {e}")
         return await ctx.send(f"✅ Server chưa có category nào, đã tạo kênh {channel.mention}")
-    view = CategoryPickView(ctx, name, categories)
+    view = CategoryPickView(ctx.guild, ctx.author, ctx.channel, name, categories)
     view.message = await ctx.send(view.prompt(), view=view)
+
+
+@bot.tree.command(name="taokenh", description="Tạo kênh mới và chọn category (không thêm ✅ vào tên)")
+@app_commands.describe(ten="Tên kênh")
+@app_commands.guild_only()
+async def taokenh_slash(interaction: discord.Interaction, ten: str):
+    if not await is_owner(interaction.user.id):
+        return await interaction.response.send_message("❌ Bạn không có quyền dùng lệnh này.", ephemeral=True)
+    guild = interaction.guild
+    categories = list(guild.categories)
+    if not categories:
+        try:
+            channel = await guild.create_text_channel(ten, reason=f"Tạo bởi {interaction.user}")
+        except discord.HTTPException as e:
+            return await interaction.response.send_message(f"❌ Không tạo được kênh: {e}", ephemeral=True)
+        return await interaction.response.send_message(f"✅ Server chưa có category nào, đã tạo kênh {channel.mention}")
+    view = CategoryPickView(guild, interaction.user, interaction.channel, ten, categories)
+    await interaction.response.send_message(view.prompt(), view=view)
+    view.message = await interaction.original_response()
 
 
 @bot.command(name="xoakenh")
@@ -1477,7 +1514,8 @@ async def help(ctx):
         embed.add_field(
             name="🧰 Quản lý kênh (owner)",
             value=(
-                "`.taokenh <tên kênh>` — Tạo kênh mới, bot cho bạn chọn category\n"
+                "`.taokenh <tên kênh>` — Tạo kênh mới, tự thêm ✅ vào đầu tên, bot cho chọn category\n"
+                "`/taokenh` — Giống `.taokenh` nhưng không thêm ✅ vào tên\n"
                 "`.xoakenh [#kênh]` — Xóa kênh (có xác nhận)\n"
                 "`.doiten [#kênh] <tên mới>` — Đổi tên kênh"
             ),
@@ -1532,6 +1570,7 @@ async def on_ready():
         log_ticket_diagnostics()
         log_stock_diagnostics()
         await auto_scan_tier_roles()
+        await sync_slash_commands()
         log_legit_diagnostics()
         try:
             await scan_legit()
