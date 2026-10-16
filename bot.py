@@ -49,10 +49,9 @@ def env_bool(name, default=False):
 
 GUILD_ID = env_int("GUILD_ID")  # tùy chọn: ID server (bot chỉ ở 1 server thì không cần)
 
-# Sold / Stock: kênh trong category Stock, gõ "sold" thì chuyển sang category Sold và thêm tiền tố
+# Sold / Stock: kênh trong category Stock (vd: ✅190k 3cape), gõ "sold" thì chuyển sang category Sold và đổi ✅ thành ❌ trong tên
 STOCK_CATEGORY_ID = env_int("STOCK_CATEGORY_ID")
 SOLD_CATEGORY_ID = env_int("SOLD_CATEGORY_ID")
-SOLD_PREFIX = os.getenv("SOLD_PREFIX", "sold-")
 SOLD_SYNC_PERMISSIONS = env_bool("SOLD_SYNC_PERMISSIONS", True)  # đồng bộ quyền theo category Sold
 
 # Auto role theo mốc chi tiêu: True = chỉ giữ role mốc cao nhất (mặc định), False = giữ role mọi mốc đã đạt
@@ -82,6 +81,9 @@ _DEFAULT_EMOJIS = (
     "<:minecraft_accept:1556987449996218409> "
     "<a:CanhXanh:1556987442869964911>"
 )
+# Hai emoji cánh ở hai bên tin báo sold (cùng bộ cánh bot react ở kênh legit)
+WING_LEFT = os.getenv("WING_LEFT", "<a:CanhXanh:1556987445437014116>")
+WING_RIGHT = os.getenv("WING_RIGHT", "<a:CanhXanh:1556987442869964911>")
 LEGIT_EMOJIS = re.findall(r"<a?:\w+:\d+>|[^\s,]+", os.getenv("LEGIT_EMOJIS", _DEFAULT_EMOJIS))
 # Mẫu tên kênh legit, {n} sẽ được thay bằng số legit hiện tại. Ví dụ: 『✅』𝙇𝙀𝙂𝙄𝙏-35
 LEGIT_NAME_FORMAT = os.getenv("LEGIT_NAME_FORMAT", "『✅』𝙇𝙀𝙂𝙄𝙏-{n}")
@@ -1069,14 +1071,25 @@ async def autorole_sync(ctx):
 
 
 # ---------- Sold / Stock ----------
+STOCK_MARK = "✅"
+SOLD_MARK = "❌"
+
+
+def swap_mark(name, old, new):
+    """Thay emoji trạng thái trong tên kênh: ✅190k 3cape <-> ❌190k 3cape. Tên chưa có emoji thì thêm vào đầu."""
+    if old in name:
+        return name.replace(old, new, 1)
+    if new in name:
+        return name
+    return (new + name)[:100]
+
+
 def sold_channel_name(name):
-    return name if name.startswith(SOLD_PREFIX) else (SOLD_PREFIX + name)[:100]
+    return swap_mark(name, STOCK_MARK, SOLD_MARK)
 
 
 def stock_channel_name(name):
-    if name.startswith(SOLD_PREFIX) and len(name) > len(SOLD_PREFIX):
-        return name[len(SOLD_PREFIX):]
-    return name
+    return swap_mark(name, SOLD_MARK, STOCK_MARK)
 
 
 async def handle_sold(message):
@@ -1096,7 +1109,6 @@ async def handle_sold(message):
         await channel.send("❌ Chưa cấu hình đúng category Sold, vui lòng báo owner.")
         return True
     try:
-        await channel.send("🔴 **SOLD** — mặt hàng đã bán hết, kênh được chuyển sang mục Sold.")
         await channel.edit(
             category=sold_category,
             name=sold_channel_name(channel.name),
@@ -1106,6 +1118,12 @@ async def handle_sold(message):
     except discord.HTTPException as e:
         print(f"[sold] Không chuyển được kênh {channel.id}: {e}")
         await channel.send(f"❌ Không chuyển được kênh: {e}")
+        return True
+    # báo sau khi đã chuyển xong
+    try:
+        await channel.send(f"{WING_LEFT} **SOLD** — mặt hàng đã bán hết, kênh đã được chuyển sang mục Sold {WING_RIGHT}")
+    except discord.HTTPException as e:
+        print(f"[sold] Đã chuyển kênh {channel.id} nhưng không gửi được tin báo (bot thiếu quyền chat ở category Sold?): {e}")
     return True
 
 
@@ -1415,7 +1433,7 @@ async def help(ctx):
             name="🛠️ Staff",
             value=(
                 "`.done @user <số tiền>` — Cộng tiền chi tiêu cho người đó (dùng ở mọi kênh, trong ticket sẽ đóng ticket)\n"
-                "`sold` — Gõ trong kênh Stock để chuyển kênh sang Sold\n"
+                "`sold` — Gõ trong kênh Stock để chuyển sang Sold (✅ trong tên đổi thành ❌)\n"
                 "`.stock` — Gõ trong kênh Sold để đưa về lại Stock\n"
                 "`.lock [#kênh]` / `.unlock [#kênh]` — Khóa/mở khóa chat\n"
                 "`.clear <số>` — Dọn tối đa 100 tin nhắn gần nhất"
