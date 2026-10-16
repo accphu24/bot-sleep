@@ -1121,7 +1121,10 @@ async def handle_sold(message):
         return True
     # báo sau khi đã chuyển xong
     try:
-        await channel.send(f"# {WING_LEFT} acc đã được bán {WING_RIGHT}")
+        text = f"# {WING_LEFT} acc đã được bán {WING_RIGHT}"
+        if LEGIT_CHANNEL_ID:
+            text += f"\n# check <#{LEGIT_CHANNEL_ID}>"
+        await channel.send(text)
     except discord.HTTPException as e:
         print(f"[sold] Đã chuyển kênh {channel.id} nhưng không gửi được tin báo (bot thiếu quyền chat ở category Sold?): {e}")
     return True
