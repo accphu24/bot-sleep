@@ -414,16 +414,13 @@ async def close(ctx):
 @bot.command(usage="@user <số tiền>")
 @staff_only()
 async def done(ctx, user: discord.User, amount: parse_amount):
-    """.done @user 100000 -> cộng tiền chi tiêu cho người đó (dùng được ở mọi kênh)."""
+    """.done @user 100000 -> cộng tiền chi tiêu cho người đó (dùng được ở mọi kênh, không đóng/xóa ticket)."""
     if user.bot:
         return await ctx.send("Không thể cộng tiền cho bot.")
     if amount <= 0:
         return await ctx.send("Số tiền phải lớn hơn 0.")
     await add_spending(user.id, amount)
     await ctx.send(f"✅ Đã cộng **{fmt(amount)}** cho {user.mention}.")
-    # dùng trong kênh ticket thì đóng ticket luôn (như trước)
-    if await get_ticket_owner(ctx.channel.id) is not None:
-        await close_ticket(ctx.channel, ctx.author, extra=f"Số tiền: {fmt(amount)} → <@{user.id}>")
 
 
 # ---------- Bảng xếp hạng ----------
@@ -1472,7 +1469,7 @@ async def help(ctx):
         embed.add_field(
             name="🛠️ Staff",
             value=(
-                "`.done @user <số tiền>` — Cộng tiền chi tiêu cho người đó (dùng ở mọi kênh, trong ticket sẽ đóng ticket)\n"
+                "`.done @user <số tiền>` — Cộng tiền chi tiêu cho người đó (dùng ở mọi kênh, không đóng ticket)\n"
                 "`sold` — Gõ trong kênh Stock để chuyển sang Sold (✅ trong tên đổi thành ❌)\n"
                 "`.stock` — Gõ trong kênh Sold để đưa về lại Stock\n"
                 "`.lock [#kênh]` / `.unlock [#kênh]` — Khóa/mở khóa chat\n"
