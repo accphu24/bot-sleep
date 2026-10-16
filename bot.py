@@ -1181,16 +1181,127 @@ class ConfirmActionView(discord.ui.View):
                 pass
 
 
+class CategoryPickView(discord.ui.View):
+    """Cho người dùng chọn category khi tạo kênh (có chuyển trang nếu server nhiều hơn 24 category)."""
+    PAGE_SIZE = 24
+
+    def __init__(self, ctx, name, categories):
+        super().__init__(timeout=60)
+        self.ctx = ctx
+        self.name = name
+        self.categories = categories
+        self.page = 0
+        self.message = None
+        self.render()
+
+    @property
+    def pages(self):
+        return max(1, -(-len(self.categories) // self.PAGE_SIZE))
+
+    def prompt(self):
+        text = f"📂 Chọn category cho kênh **{self.name}**"
+        if self.pages > 1:
+            text += f" (trang {self.page + 1}/{self.pages})"
+        return text
+
+    def render(self):
+        self.clear_items()
+        chunk = self.categories[self.page * self.PAGE_SIZE:(self.page + 1) * self.PAGE_SIZE]
+        current = self.ctx.channel.category
+        select = discord.ui.Select(
+            placeholder="Chọn category...",
+            options=[
+                discord.SelectOption(
+                    label=c.name[:100],
+                    value=str(c.id),
+                    description=(f"{len(c.channels)} kênh" + (" • category hiện tại" if c == current else ""))[:100],
+                )
+                for c in chunk
+            ],
+            row=0,
+        )
+        select.callback = self.on_select
+        self.add_item(select)
+
+        if self.pages > 1:
+            prev_btn = discord.ui.Button(label="◀", style=discord.ButtonStyle.secondary, disabled=self.page == 0, row=1)
+            next_btn = discord.ui.Button(
+                label="▶", style=discord.ButtonStyle.secondary, disabled=self.page >= self.pages - 1, row=1
+            )
+            prev_btn.callback = self.on_prev
+            next_btn.callback = self.on_next
+            self.add_item(prev_btn)
+            self.add_item(next_btn)
+        none_btn = discord.ui.Button(label="Không dùng category", emoji="📄", style=discord.ButtonStyle.primary, row=1)
+        none_btn.callback = self.on_none
+        cancel_btn = discord.ui.Button(label="Hủy", style=discord.ButtonStyle.secondary, row=1)
+        cancel_btn.callback = self.on_cancel
+        self.add_item(none_btn)
+        self.add_item(cancel_btn)
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("Chỉ người dùng lệnh mới chọn được.", ephemeral=True)
+            return False
+        return True
+
+    async def create(self, interaction, category):
+        self.stop()
+        await interaction.response.defer()
+        try:
+            channel = await self.ctx.guild.create_text_channel(
+                self.name, category=category, reason=f"Tạo bởi {self.ctx.author}"
+            )
+        except discord.HTTPException as e:
+            return await interaction.edit_original_response(content=f"❌ Không tạo được kênh: {e}", view=None)
+        where = f"trong category **{category.name}**" if category else "(không thuộc category nào)"
+        await interaction.edit_original_response(content=f"✅ Đã tạo kênh {channel.mention} {where}", view=None)
+
+    async def on_select(self, interaction: discord.Interaction):
+        category = self.ctx.guild.get_channel(int(interaction.data["values"][0]))
+        if not isinstance(category, discord.CategoryChannel):
+            self.stop()
+            return await interaction.response.edit_message(content="❌ Category này không còn tồn tại.", view=None)
+        await self.create(interaction, category)
+
+    async def on_none(self, interaction: discord.Interaction):
+        await self.create(interaction, None)
+
+    async def on_prev(self, interaction: discord.Interaction):
+        self.page = max(0, self.page - 1)
+        self.render()
+        await interaction.response.edit_message(content=self.prompt(), view=self)
+
+    async def on_next(self, interaction: discord.Interaction):
+        self.page = min(self.pages - 1, self.page + 1)
+        self.render()
+        await interaction.response.edit_message(content=self.prompt(), view=self)
+
+    async def on_cancel(self, interaction: discord.Interaction):
+        self.stop()
+        await interaction.response.edit_message(content="Đã hủy tạo kênh.", view=None)
+
+    async def on_timeout(self):
+        if self.message:
+            try:
+                await self.message.edit(content="Hết thời gian, đã hủy tạo kênh.", view=None)
+            except discord.HTTPException:
+                pass
+
+
 @bot.command(name="taokenh")
 @owner_only()
-async def taokenh(ctx, name: str, category: Optional[discord.CategoryChannel] = None):
-    """.taokenh ten-kenh [category] — mặc định tạo trong category của kênh hiện tại."""
-    category = category or ctx.channel.category
-    try:
-        channel = await ctx.guild.create_text_channel(name, category=category, reason=f"Tạo bởi {ctx.author}")
-    except discord.HTTPException as e:
-        return await ctx.send(f"❌ Không tạo được kênh: {e}")
-    await ctx.send(f"✅ Đã tạo kênh {channel.mention}")
+async def taokenh(ctx, *, name: str):
+    """.taokenh <tên kênh> — bot hiện danh sách category để bạn chọn nơi tạo kênh."""
+    categories = list(ctx.guild.categories)
+    if not categories:
+        try:
+            channel = await ctx.guild.create_text_channel(name, reason=f"Tạo bởi {ctx.author}")
+        except discord.HTTPException as e:
+            return await ctx.send(f"❌ Không tạo được kênh: {e}")
+        return await ctx.send(f"✅ Server chưa có category nào, đã tạo kênh {channel.mention}")
+    view = CategoryPickView(ctx, name, categories)
+    view.message = await ctx.send(view.prompt(), view=view)
 
 
 @bot.command(name="xoakenh")
@@ -1345,7 +1456,7 @@ async def help(ctx):
         embed.add_field(
             name="🧰 Quản lý kênh (owner)",
             value=(
-                "`.taokenh <tên> [category]` — Tạo kênh mới\n"
+                "`.taokenh <tên kênh>` — Tạo kênh mới, bot cho bạn chọn category\n"
                 "`.xoakenh [#kênh]` — Xóa kênh (có xác nhận)\n"
                 "`.doiten [#kênh] <tên mới>` — Đổi tên kênh"
             ),
