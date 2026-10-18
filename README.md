@@ -33,6 +33,28 @@ Bot cần ở server chứa các emoji trên, và có quyền Manage Channels, A
 Chỉnh số hiện tại bằng `/config legit_count so:632` (legit kế tiếp là 633).
 Nếu thiếu emoji: chạy `/config check_emoji` để biết emoji nào bot không thấy và quyền còn thiếu. Khi 1 emoji lỗi, bot thả emoji thường thay thế để luôn đủ 3 reaction.
 
+## Debug khi 1 server không react emoji
+Bot chạy nhiều server thì **mỗi server phải có kênh legit riêng**. Biến `AUTOREACTER_VOUCH` chỉ là kênh dự phòng của đúng 1 server; server còn lại phải đặt bằng lệnh (chạy NGAY TRONG server đó):
+`/config set muc:Kênh legit kenh:#kênh-legit`
+Cách tìm nguyên nhân:
+1. Chạy `/config debug` trong server không react: bot liệt kê kênh legit đang dùng, quyền còn thiếu, emoji nào không thấy, và các tin legit gần nhất bot đã nhận / bỏ qua (kèm lý do).
+2. Xem log (Railway → Logs). Mỗi dòng có dạng `thời gian [MỨC] [THẺ] nội dung key=value ...`, các thẻ quan trọng:
+   - `[CHANDOAN]` chẩn đoán từng server lúc khởi động (thiếu kênh / thiếu quyền / emoji lỗi).
+   - `[LEGIT]` mỗi tin legit: nhận tin, react từng emoji (kèm mã lỗi Discord và gợi ý), kết quả cuối, đổi tên kênh.
+     Dòng `Có tin đúng mẫu "+1 legit" nhưng KHÔNG phải kênh legit của server này` = server đó chưa đặt kênh legit.
+     Dòng `content RỖNG` = chưa bật Message Content Intent.
+   - `[GATEWAY]`, `[RATELIMIT]` kết nối và giới hạn tốc độ; `[GUILD]` bot vào / rời server.
+3. Đổi mức log bằng biến `LOG_LEVEL` (`debug` | `info` | `warn` | `error`).
+
+## Role theo mốc chi tiêu
+Khi tổng tiền khách đã mua (Confirm hoặc `.done`) đạt một mốc, bot tự cấp role tương ứng cho khách (ở mọi server có cấu hình mốc và khách đang ở trong server đó). Mỗi server cấu hình riêng (chỉ Owner):
+- `/moc_role add tien:500k role:@Bạc` thêm / sửa mốc (nhập `500k`, `1tr`, `2.000.000`...). Cùng số tiền thì đổi role.
+- `/moc_role remove tien:500k` xóa mốc (không gỡ role đã cấp). `/moc_role list` xem mốc và cảnh báo role lỗi.
+- `/moc_role che_do`: **giữ tất cả** role các mốc đã đạt (mặc định) hoặc **chỉ giữ role mốc cao nhất** (gỡ role mốc thấp hơn).
+- `/moc_role sync` quét mọi khách trong dữ liệu và cấp bù role (chạy 1 lần sau khi cài mốc, hoặc khi khách vào server sau khi đã mua).
+- `/moc_role kiemtra khach:@user` xem tổng chi tiêu, mốc đã đạt và mốc kế tiếp của khách.
+Bot cần quyền **Manage Roles** và role của bot phải nằm **cao hơn** các role mốc (Server Settings → Roles). Kết quả cấp role hiện ngay trong embed `.done` / tin giao dịch thành công, và có log thẻ `[MOC]`.
+
 ## Danh sách lệnh
 **Prefix (gõ trong chat)**
 | Lệnh | Ai dùng | Tác dụng |
@@ -52,7 +74,7 @@ Nếu thiếu emoji: chạy `/config check_emoji` để biết emoji nào bot kh
 | Lệnh | Ai dùng |
 |---|---|
 | `/add_acc`, `/stock acc`, `/set_qr`, `/restock`, `/done`, `/leaderboard`, `/sticky set\|remove`, `/skin`, `/taokenh ten [danhmuc]`, `/xoakenh kenh\|id` | Staff/Owner |
-| `/set_kenhsold`, `/config set\|clear\|show\|legit_dem\|legit_count\|check_emoji`, `/staff add\|remove\|list\|role` | Owner |
+| `/set_kenhsold`, `/config set\|clear\|show\|debug\|legit_dem\|legit_count\|check_emoji`, `/staff add\|remove\|list\|role`, `/moc_role add\|remove\|list\|che_do\|sync\|kiemtra` | Owner |
 | `/owner list` | Owner |
 | `/owner add\|remove` | Owner gốc (`OWNER_ID`) |
 

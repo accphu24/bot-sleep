@@ -3,10 +3,12 @@ const db = require('../utils/db');
 const { parseAmount, formatVND } = require('../utils/money');
 const { checkStaffOrOwner } = require('../utils/permissions');
 const { refreshLeaderboardMessage } = require('./leaderboard');
+const milestones = require('../utils/milestones');
+const { log, errInfo } = require('../utils/logger');
 
 // Logic dùng chung cho `.done` (prefix) và `/done` (slash). Trả về { ok:false, msg } hoặc { ok:true, embed }.
 // Sau khi gửi embed, người gọi nên gọi refreshLeaderboardMessage(client) để bảng xếp hạng cập nhật ngay.
-async function processDone({ channelId, customerId, amountText, orders = 1, user }) {
+async function processDone({ channelId, customerId, amountText, orders = 1, user, client = null }) {
     const amount = parseAmount(amountText);
     if (amount <= 0) return { ok: false, msg: '❌ Số tiền không hợp lệ! Vui lòng nhập số tiền lớn hơn 0.' };
     const ordersCount = Number.isInteger(orders) && orders >= 1 ? orders : 1;
@@ -31,6 +33,18 @@ async function processDone({ channelId, customerId, amountText, orders = 1, user
         return { ok: false, msg: `❌ Không ghi được doanh thu: ${err.message}. Hãy thử lại.` };
     }
 
+    log.info('DONE', 'Ghi doanh thu thủ công', { customerId, amount, orders: ordersCount, tong: updated.totalSpent, by: user?.id, channelId });
+
+    // Cấp role theo mốc chi tiêu (lỗi ở đây không làm hỏng việc ghi doanh thu)
+    let milestoneLines = [];
+    if (client) {
+        milestoneLines = milestones.summaryLines(
+            await milestones.applyMilestones(client, customerId, updated.totalSpent, { reason: 'lệnh done' }).catch(err => {
+                log.error('MOC', 'Lỗi khi cấp role mốc sau done', { customerId, ...errInfo(err) });
+                return [];
+            }), formatVND);
+    }
+
     const embed = new EmbedBuilder()
         .setTitle('✅ GHI NHẬN ĐƠN HÀNG THÀNH CÔNG')
         .setColor('#00FFAA')
@@ -40,7 +54,8 @@ async function processDone({ channelId, customerId, amountText, orders = 1, user
             `📦 **Số đơn cộng thêm:** \`${ordersCount} đơn\`\n\n` +
             `**Tổng tích lũy của khách:**\n` +
             `> 💵 Tổng chi tiêu: **${formatVND(updated.totalSpent)}**\n` +
-            `> 🛒 Tổng số đơn: **${updated.totalOrders} đơn**`
+            `> 🛒 Tổng số đơn: **${updated.totalOrders} đơn**` +
+            (milestoneLines.length ? `\n\n${milestoneLines.join('\n')}` : '')
         )
         .setFooter({ text: `Xác nhận bởi ${user.username}`, iconURL: user.displayAvatarURL?.() || undefined })
         .setTimestamp();
@@ -79,7 +94,8 @@ module.exports = {
             customerId: interaction.options.getUser('customer').id,
             amountText: interaction.options.getString('amount'),
             orders: interaction.options.getInteger('orders') || 1,
-            user: interaction.user
+            user: interaction.user,
+            client: interaction.client
         });
         if (!result.ok) return await interaction.reply({ content: result.msg, flags: MessageFlags.Ephemeral });
 

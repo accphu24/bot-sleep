@@ -35,6 +35,9 @@ const { processDone } = require('./commands/done');
 const { cfg, getExtraStaff, getExtraOwners, isLegitEnabled, isLegitChannel, getLegitChannelMap } = require('./utils/runtime');
 const { loadConfig, setLegitChannel } = require('./utils/config');
 const { scheduleLegitRename } = require('./utils/legit');
+const { log, errInfo, hint, trace } = require('./utils/logger');
+const milestones = require('./utils/milestones');
+const { diagnoseGuild, formatDiagnosis, resolveLegitChannel } = require('./utils/diagnostics');
 const { buildCategoryPicker, isCategoryPicker, handleCategoryPick, deleteChannel, parseChannelId } = require('./utils/channelManager');
 
 const EPHEMERAL = MessageFlags.Ephemeral;
@@ -495,10 +498,18 @@ async function settleTicket(ticket) {
 
     const finalAmount = ticket.amount || parseAmount(account?.price) || 0;
     let revenue = 'zero';
+    let milestone = [];
     if (buyerId && finalAmount > 0) {
         if (await db.markTicketRevenue(ticket._id)) {
             try {
-                await db.recordCustomerPurchase(buyerId, finalAmount, 1);
+                const updated = await db.recordCustomerPurchase(buyerId, finalAmount, 1);
+                log.info('DONE', 'Ghi doanh thu từ Confirm', { buyerId, amount: finalAmount, tong: updated?.totalSpent, ticket: ticket._id });
+                // Cấp role theo mốc chi tiêu. Lỗi ở bước này không được làm hỏng việc giao hàng.
+                milestone = milestones.summaryLines(
+                    await milestones.applyMilestones(client, buyerId, updated?.totalSpent || finalAmount, { reason: 'Confirm đơn' }).catch(err => {
+                        log.error('MOC', 'Lỗi khi cấp role mốc sau Confirm', { buyerId, ...errInfo(err) });
+                        return [];
+                    }), formatVND);
             } catch (err) {
                 await db.updateTicket(ticket._id, { revenueRecorded: false }).catch(() => null);   // cho phép thử lại
                 throw err;
@@ -509,7 +520,7 @@ async function settleTicket(ticket) {
             revenue = 'already';
         }
     }
-    return { account, revenue };
+    return { account, revenue, milestone };
 }
 
 const buildResendRow = (username) => new ActionRowBuilder().addComponents(
@@ -554,9 +565,10 @@ async function handleConfirm(interaction) {
     // Giao thông tin đăng nhập. delivery: 'dm' | 'pending' (DM thất bại, còn lưu) | 'manual' (kho không có thông tin)
     let account = null;
     let revenue = 'zero';
+    let milestone = [];
     let delivery = 'pending';
     try {
-        ({ account, revenue } = await settleTicket(locked));
+        ({ account, revenue, milestone } = await settleTicket(locked));
 
         const buyerUser = buyerId ? await client.users.fetch(buyerId).catch(() => null) : null;
         let creds = null;
@@ -592,7 +604,7 @@ async function handleConfirm(interaction) {
             new EmbedBuilder()
                 .setTitle('✅ GIAO DỊCH THÀNH CÔNG')
                 .setColor(delivery === 'dm' ? '#00FF00' : '#FFAA00')
-                .setDescription(deliveryText + '\n\n*Staff/Owner gõ `.close` để đóng ticket sau khi xong việc.*')
+                .setDescription(deliveryText + (milestone.length ? `\n\n${milestone.join('\n')}` : '') + '\n\n*Staff/Owner gõ `.close` để đóng ticket sau khi xong việc.*')
         ],
         components: delivery === 'pending' ? [buildResendRow(username)] : []
     });
@@ -915,12 +927,13 @@ const stickyState = new Map();
 
 // Chống spam kênh legit: 1 người chỉ được đếm 1 lần / LEGIT_COOLDOWN_SEC giây
 const legitCooldown = new Map();
-function onLegitCooldown(userId) {
+function onLegitCooldown(userId, guildId = '') {
     const waitMs = C.LEGIT_COOLDOWN_SEC * 1000;
     if (!waitMs) return false;
-    const last = legitCooldown.get(userId) || 0;
+    const k = `${guildId}:${userId}`;   // tính riêng từng server: khách vouch ở server này không bị chặn ở server kia
+    const last = legitCooldown.get(k) || 0;
     if (Date.now() - last < waitMs) return true;
-    legitCooldown.set(userId, Date.now());
+    legitCooldown.set(k, Date.now());
     if (legitCooldown.size > 5000) {
         for (const [id, t] of legitCooldown) if (Date.now() - t > waitMs) legitCooldown.delete(id);
     }
@@ -941,24 +954,64 @@ function markLegitHandled(id) {
 //  - Server BẬT đếm (mặc định): +1 vào bộ đếm RIÊNG của server, rồi (nếu rename) đổi tên kênh thành 『✅』𝙇𝙀𝙂𝙄𝙏-<số>
 //  - Server TẮT đếm (/config legit_dem): chỉ react, không đếm số, không đụng tên kênh
 // Trả về số legit vừa đếm, hoặc null nếu không đếm.
-async function reactLegit(message, { rename = true } = {}) {
-    if (!markLegitHandled(message.id)) return null;
-    const counting = isLegitEnabled(message.guild.id);
-    const number = counting ? await db.nextLegitNumber(C.LEGIT_START, message.guild.id) : null;
+async function reactLegit(message, { rename = true, source = 'tin-moi' } = {}) {
+    const t0 = Date.now();
+    const g = message.guild;
+    const ctx = { guild: g.name, guildId: g.id, channelId: message.channel?.id, msgId: message.id, userId: message.author?.id, nguon: source };
+    if (!markLegitHandled(message.id)) {
+        log.debug('LEGIT', 'Bỏ qua: tin này đã được xử lý rồi (tránh đếm trùng)', ctx);
+        return null;
+    }
 
+    const counting = isLegitEnabled(g.id);
+    let number = null;
+    if (counting) {
+        try {
+            number = await db.nextLegitNumber(C.LEGIT_START, g.id);
+        } catch (err) {
+            // Lỗi DB không được làm mất reaction: vẫn react, chỉ là không có số
+            log.error('LEGIT', 'Không đếm được số legit (lỗi MongoDB), vẫn tiếp tục react', { ...ctx, ...errInfo(err) });
+        }
+    }
+
+    // Kiểm tra quyền trước khi react để log nói rõ thiếu quyền gì
+    const perms = message.channel?.permissionsFor?.(client.user);
+    if (perms) {
+        const miss = [['ViewChannel', 'View Channel'], ['ReadMessageHistory', 'Read Message History'], ['AddReactions', 'Add Reactions'], ['UseExternalEmojis', 'Use External Emojis']]
+            .filter(([f]) => !perms.has(PermissionFlagsBits[f])).map(([, l]) => l);
+        if (miss.length) log.warn('LEGIT', `Bot THIẾU quyền trong kênh legit: ${miss.join(', ')}`, { ...ctx, goiy: 'Cấp quyền cho role của bot trong kênh này (hoặc ở danh mục chứa kênh)' });
+    }
+
+    const results = [];
     for (const [i, emoji] of C.LEGIT_REACTIONS.entries()) {
         try {
             await message.react(emoji);
+            results.push({ emoji, ok: true });
+            log.debug('LEGIT', `react ${i + 1}/${C.LEGIT_REACTIONS.length} OK`, { ...ctx, emoji });
         } catch (err) {
             // Thường do bot chưa ở server chứa emoji, emoji đã bị xóa, hoặc kênh thiếu quyền Use External Emojis.
-            // Dùng /config check_emoji để xem emoji nào lỗi. Vẫn thả emoji thay thế để luôn đủ 3 reaction.
-            console.warn(`[LEGIT] Không thả được emoji ${emoji} (mã ${err.code || 'n/a'}): ${err.message}`);
-            await message.react(C.LEGIT_FALLBACK_REACTIONS[i] || '✅').catch(() => null);
+            // Dùng /config check_emoji hoặc /config debug để xem. Vẫn thả emoji thay thế để luôn đủ 3 reaction.
+            log.warn('LEGIT', `react ${i + 1}/${C.LEGIT_REACTIONS.length} THẤT BẠI, thử emoji thay thế`, { ...ctx, emoji, ...errInfo(err), goiy: hint(err) });
+            const fb = C.LEGIT_FALLBACK_REACTIONS[i] || '✅';
+            try {
+                await message.react(fb);
+                results.push({ emoji, ok: true, fallback: fb });
+                log.debug('LEGIT', `react thay thế OK`, { ...ctx, emoji: fb });
+            } catch (err2) {
+                results.push({ emoji, ok: false, code: err2.code });
+                log.error('LEGIT', 'Emoji thay thế cũng THẤT BẠI (không react được gì)', { ...ctx, emoji: fb, ...errInfo(err2), goiy: hint(err2) });
+            }
         }
         await new Promise(r => setTimeout(r, 200));
     }
 
-    if (counting && rename) scheduleLegitRename(message.channel, number);
+    const okN = results.filter(r => r.ok).length;
+    const fbN = results.filter(r => r.fallback).length;
+    const summary = `react ${okN}/${results.length}${fbN ? ` (${fbN} emoji thay thế)` : ''}${counting ? `, số legit #${number ?? '?'}` : ', tắt đếm'}`;
+    (okN === results.length ? log.info : okN ? log.warn : log.error)('LEGIT', `Xong: ${summary}`, { ...ctx, ms: Date.now() - t0 });
+    trace(g.id, okN === results.length ? 'ok' : 'loi', summary + ` (user ${message.author?.id})`);
+
+    if (counting && rename && number !== null) scheduleLegitRename(message.channel, number);
     return number;
 }
 
@@ -970,7 +1023,7 @@ const hasMyReaction = (m) => Boolean(m.reactions?.cache?.some(r => r.me));
 
 async function scanLegitChannel(channel) {
     const msgs = await channel.messages.fetch({ limit: LEGIT_SCAN_LIMIT }).catch(err => {
-        console.warn(`[LEGIT] Không đọc được lịch sử kênh ${channel.id}: ${err.message}`);
+        log.warn('LEGIT', 'Quét khởi động: không đọc được lịch sử kênh legit', { channelId: channel.id, guildId: channel.guildId, ...errInfo(err), goiy: hint(err) || 'Kiểm tra quyền View Channel + Read Message History' });
         return null;
     });
     if (!msgs) return { reacted: 0, last: null };
@@ -979,11 +1032,13 @@ async function scanLegitChannel(channel) {
     const todo = [...msgs.values()]
         .filter(m => !m.author?.bot && C.LEGIT_PATTERN.test(m.content || '') && !hasMyReaction(m))
         .sort((a, b) => (a.createdTimestamp || 0) - (b.createdTimestamp || 0));
+    const matched = [...msgs.values()].filter(m => !m.author?.bot && C.LEGIT_PATTERN.test(m.content || '')).length;
+    log.info('LEGIT', 'Quét khởi động: kết quả đọc kênh', { guildId: channel.guildId, channelId: channel.id, doc_duoc: msgs.size, dung_mau: matched, chua_react: todo.length });
 
     let last = null;
     for (const m of todo) {
         await db.clearRemindersForBuyer(m.author.id).catch(() => null);
-        const n = await reactLegit(m, { rename: false });
+        const n = await reactLegit(m, { rename: false, source: 'quet-khoi-dong' });
         if (n !== null) last = n;
     }
     // Server bật đếm: đổi tên kênh 1 lần theo số cuối cùng. Server tắt đếm: không đụng tên kênh.
@@ -1000,7 +1055,10 @@ async function scanLegitChannels() {
     const summary = [];
     for (const id of ids) {
         try {
-            const channel = await client.channels.fetch(id).catch(() => null);
+            const channel = await client.channels.fetch(id).catch(err => {
+                log.warn('LEGIT', 'Quét khởi động: không lấy được kênh legit', { channelId: id, ...errInfo(err), goiy: hint(err) });
+                return null;
+            });
             if (!channel?.messages || !channel.guildId) continue;
             const own = getLegitChannelMap().get(channel.guildId);
             if (!own) await setLegitChannel(channel.guildId, channel.id).catch(() => null);   // nhớ kênh legit theo server
@@ -1008,11 +1066,11 @@ async function scanLegitChannels() {
             const r = await scanLegitChannel(channel);
             summary.push({ guildId: channel.guildId, channelId: channel.id, counting: isLegitEnabled(channel.guildId), ...r });
         } catch (err) {
-            console.error(`[LỖI QUÉT LEGIT ${id}]:`, err.message);
+            log.error('LEGIT', 'Lỗi khi quét kênh legit lúc khởi động', { channelId: id, ...errInfo(err) });
         }
     }
     for (const s of summary) {
-        console.log(`[LEGIT] Server ${s.guildId}: ${s.counting ? 'đếm số' : 'chỉ react (tắt đếm)'}, đã react ${s.reacted} tin${s.last !== null ? `, số mới nhất ${s.last}` : ''}.`);
+        log.info('LEGIT', `Server ${s.guildId}: ${s.counting ? 'đếm số' : 'chỉ react (tắt đếm)'}, đã react bù ${s.reacted} tin${s.last !== null ? `, số mới nhất ${s.last}` : ''}.`);
     }
     return summary;
 }
@@ -1084,9 +1142,36 @@ async function handleMessage(message) {
         }
 
         // 2. Kênh legit của server: chỉ tin đúng mẫu "+1 legit <@người_bán> ..." mới được xử lý (react; server bật đếm thì +1 và đổi tên kênh).
-        if (isLegitChannel(message.guild.id, message.channel.id) && C.LEGIT_PATTERN.test(message.content)) {
-            await db.clearRemindersForBuyer(message.author.id);   // khách đã vouch thì ngừng nhắc
-            if (!onLegitCooldown(message.author.id)) await reactLegit(message);
+        {
+            const looksLegit = C.LEGIT_PATTERN.test(message.content || '');
+            const lctx = { guild: message.guild.name, guildId: message.guild.id, channelId: message.channel.id, msgId: message.id, userId: message.author.id };
+            if (isLegitChannel(message.guild.id, message.channel.id)) {
+                if (looksLegit) {
+                    log.info('LEGIT', 'Nhận tin legit hợp lệ', { ...lctx, noidung: message.content.slice(0, 60) });
+                    await db.clearRemindersForBuyer(message.author.id);   // khách đã vouch thì ngừng nhắc
+                    if (onLegitCooldown(message.author.id, message.guild.id)) {
+                        log.info('LEGIT', `Bỏ qua: người này đang trong thời gian chờ chống spam (${C.LEGIT_COOLDOWN_SEC}s)`, lctx);
+                        trace(message.guild.id, 'cooldown', `user ${message.author.id} bị chặn spam ${C.LEGIT_COOLDOWN_SEC}s`);
+                    } else {
+                        await reactLegit(message);
+                    }
+                } else if (!message.content && !message.attachments?.size && !message.embeds?.length) {
+                    // content rỗng dù người dùng gõ chữ = thường do chưa bật Message Content Intent
+                    log.warn('LEGIT', 'Tin trong kênh legit có content RỖNG, bot không đọc được nội dung', { ...lctx, goiy: 'Bật Message Content Intent trong Discord Developer Portal > Bot (bắt buộc)' });
+                    trace(message.guild.id, 'skip', 'content rỗng (kiểm tra Message Content Intent)');
+                } else {
+                    log.debug('LEGIT', 'Bỏ qua: tin trong kênh legit KHÔNG đúng mẫu "+1 legit @người_bán ..."', { ...lctx, noidung: (message.content || '').slice(0, 60) });
+                    trace(message.guild.id, 'skip', `không đúng mẫu: "${(message.content || '').slice(0, 40)}"`);
+                }
+            } else if (looksLegit) {
+                // Đúng mẫu nhưng sai kênh: nguyên nhân hay gặp nhất khi 1 server không react
+                const r = resolveLegitChannel(message.guild.id);
+                log.warn('LEGIT', 'Có tin đúng mẫu "+1 legit" nhưng KHÔNG phải kênh legit của server này, bot không react', {
+                    ...lctx, kenh_hien_tai: message.channel.id, kenh_legit_cua_server: r.id || '(chưa đặt)', nguon: r.source,
+                    goiy: 'Chạy /config set muc:Kênh legit kenh:#kênh ngay trong server này (hoặc /config debug để xem chi tiết)'
+                });
+                trace(message.guild.id, 'sai-kenh', `tin "+1 legit" ở <#${message.channel.id}> nhưng kênh legit là ${r.id ? `<#${r.id}>` : 'CHƯA ĐẶT'}`);
+            }
         }
 
         // 3. Lệnh tin nhắn "sold"
@@ -1142,7 +1227,8 @@ async function handleMessage(message) {
                 customerId: um[1],
                 amountText: parts[1],
                 orders: parts[2] !== undefined ? parseInt(parts[2], 10) : 1,
-                user: message.author
+                user: message.author,
+                client
             });
             if (!result.ok) return await message.reply({ content: result.msg }).catch(() => null);
             await message.channel.send({ embeds: [result.embed] });
@@ -1251,7 +1337,8 @@ async function handleMessage(message) {
             }
         }
     } catch (err) {
-        console.error('Lỗi khi xử lý tin nhắn:', err);
+        log.error('MSG', 'Lỗi khi xử lý tin nhắn', { guildId: message.guild?.id, channelId: message.channel?.id, msgId: message.id, ...errInfo(err) });
+        console.error(err);
     }
 }
 
@@ -1260,6 +1347,41 @@ async function handleMessage(message) {
 // ==========================================
 client.on('interactionCreate', handleInteraction);
 client.on('messageCreate', handleMessage);
+
+// ---- Log kết nối / sự kiện hệ thống (giúp debug khi bot "im lặng" ở 1 server) ----
+client.on(Events.Warn || 'warn', m => log.warn('GATEWAY', String(m)));
+client.on(Events.Error || 'error', err => log.error('GATEWAY', 'Lỗi client', errInfo(err)));
+client.on(Events.ShardDisconnect || 'shardDisconnect', (ev, id) => log.warn('GATEWAY', 'Shard mất kết nối', { shard: id, code: ev?.code }));
+client.on(Events.ShardReconnecting || 'shardReconnecting', id => log.warn('GATEWAY', 'Shard đang kết nối lại', { shard: id }));
+client.on(Events.ShardResume || 'shardResume', (id, n) => log.info('GATEWAY', 'Shard đã kết nối lại', { shard: id, bo_lo: n }));
+client.rest.on('rateLimited', info => log.warn('RATELIMIT', 'Bị Discord giới hạn tốc độ', {
+    method: info.method, route: info.route, timeout_ms: info.timeToReset, global: info.global, limit: info.limit
+}));
+
+async function logGuildDiagnostics(guild, title = 'Chẩn đoán server') {
+    try {
+        const d = await diagnoseGuild(client, guild);
+        log.info('CHANDOAN', title, {
+            guild: d.guildName, guildId: d.guildId, kenh_legit: d.legit.id || '(chưa đặt)', nguon: d.legit.source,
+            dem_so: d.legit.counting, quyen: Object.entries(d.legit.perms).map(([k, v]) => `${k}:${v ? 'ok' : 'THIEU'}`).join(',') || '-',
+            emoji_thay: d.emojis.filter(e => !e.custom || e.visible).length + '/' + d.emojis.length,
+            moc_role: d.milestones.tiers, manage_roles: d.milestones.manageRoles
+        });
+        for (const p of d.problems) log.warn('CHANDOAN', p.replace(/\*\*/g, '').replace(/`/g, ''), { guild: d.guildName, guildId: d.guildId });
+        for (const n of d.notes) log.info('CHANDOAN', n, { guild: d.guildName, guildId: d.guildId });
+        return d;
+    } catch (err) {
+        log.error('CHANDOAN', 'Không chẩn đoán được server', { guildId: guild.id, ...errInfo(err) });
+        return null;
+    }
+}
+
+client.on(Events.GuildCreate || 'guildCreate', guild => {
+    log.info('GUILD', 'Bot được thêm vào server', { guild: guild.name, guildId: guild.id, members: guild.memberCount });
+    logGuildDiagnostics(guild, 'Chẩn đoán server mới');
+});
+client.on(Events.GuildDelete || 'guildDelete', guild => log.warn('GUILD', 'Bot rời / bị kick khỏi server', { guild: guild.name, guildId: guild.id }));
+
 client.on(Events.ChannelDelete || 'channelDelete', async channel => {
     try {
         await handleCancelTicket(channel.id);
@@ -1270,6 +1392,10 @@ client.on(Events.ChannelDelete || 'channelDelete', async channel => {
 
 client.once(Events.ClientReady || 'ready', async () => {
     console.log(`🤖 Bot đã kết nối: ${client.user.tag}`);
+    log.info('READY', 'Bot sẵn sàng', {
+        bot: client.user.tag, so_server: client.guilds.cache.size, log_level: process.env.LOG_LEVEL || 'debug',
+        servers: [...client.guilds.cache.values()].map(g => `${g.name}(${g.id})`).join(' | ')
+    });
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
@@ -1280,6 +1406,7 @@ client.once(Events.ClientReady || 'ready', async () => {
     }
 
     await reconcileOnStartup();
+    for (const g of client.guilds.cache.values()) await logGuildDiagnostics(g);
     await scanLegitChannels().catch(err => console.error('[LỖI QUÉT LEGIT]:', err));
     await refreshLeaderboardMessage(client).catch(() => null);   // bảng xếp hạng luôn khớp dữ liệu sau mỗi lần khởi động
     setInterval(() => runVouchReminders().catch(err => console.error('[Lỗi quét nhắc vouch]:', err.message)), 60_000);
@@ -1307,7 +1434,8 @@ async function main() {
     await client.login(process.env.DISCORD_TOKEN);
 }
 
-process.on('unhandledRejection', err => console.error('[unhandledRejection]', err));
+process.on('unhandledRejection', err => { log.error('PROCESS', 'unhandledRejection', errInfo(err)); console.error(err); });
+process.on('uncaughtException', err => { log.error('PROCESS', 'uncaughtException', errInfo(err)); console.error(err); });
 
 if (require.main === module) {
     main().catch(err => {
@@ -1318,5 +1446,5 @@ if (require.main === module) {
 
 module.exports = {
     client, handleInteraction, handleMessage, handleCancelTicket, closeTicketChannel,
-    runVouchReminders, reconcileOnStartup, scanLegitChannels, resendCredentials, toSoldName, toPendingName, toAvailableName
+    runVouchReminders, reconcileOnStartup, logGuildDiagnostics, scanLegitChannels, resendCredentials, toSoldName, toPendingName, toAvailableName
 };

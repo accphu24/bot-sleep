@@ -1,6 +1,7 @@
 // Tên kênh legit: 『✅』𝙇𝙀𝙂𝙄𝙏-<số>. Discord chỉ cho đổi tên 2 lần / 10 phút (tính riêng TỪNG kênh) nên mỗi kênh đổi tối đa
 // 1 lần / ~5 phút, luôn lấy số mới nhất tại thời điểm đổi (không bao giờ bỏ sót số cuối).
 const C = require('./constants');
+const { log, errInfo, hint } = require('./logger');
 
 const states = new Map();   // channelId -> { last, timer, latest }
 
@@ -17,8 +18,10 @@ function applyRename(channel, st) {
     st.last = Date.now();
     const name = legitName(st.latest);
     if (channel.name !== name) {
-        return Promise.resolve(channel.setName(name)).catch(err =>
-            console.warn('[LEGIT] Không đổi được tên kênh (thiếu quyền Manage Channels?):', err.message));
+        log.info('LEGIT', 'Đang đổi tên kênh legit', { channelId: channel.id, tu: channel.name, thanh: name });
+        return Promise.resolve(channel.setName(name))
+            .then(() => log.info('LEGIT', 'Đã đổi tên kênh legit', { channelId: channel.id, ten: name }))
+            .catch(err => log.warn('LEGIT', 'Không đổi được tên kênh legit', { channelId: channel.id, ...errInfo(err), goiy: hint(err) || 'Thiếu quyền Manage Channels?' }));
     }
 }
 
@@ -30,9 +33,10 @@ function scheduleLegitRename(channel, number, { force = false } = {}) {
         if (st.timer) clearTimeout(st.timer);
         return applyRename(channel, st);
     }
-    if (st.timer) return;   // đã có lịch đổi tên, sẽ dùng số mới nhất
+    if (st.timer) { log.debug('LEGIT', 'Đã có lịch đổi tên kênh, sẽ dùng số mới nhất', { channelId: channel.id, so: number }); return; }
     const wait = Math.max(0, st.last + C.LEGIT_RENAME_INTERVAL_MS - Date.now());
     if (wait === 0) return applyRename(channel, st);
+    log.debug('LEGIT', 'Hẹn đổi tên kênh legit (tránh giới hạn 2 lần/10 phút)', { channelId: channel.id, so: number, sau_giay: Math.round(wait / 1000) });
     st.timer = setTimeout(() => applyRename(channel, st), wait);
     if (st.timer.unref) st.timer.unref();
 }

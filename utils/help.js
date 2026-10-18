@@ -59,6 +59,8 @@ function buildHelpEmbed(member) {
                 '`/config legit_dem bat|tat`: bật / tắt đếm số legit (tắt = chỉ react, lưu theo từng server).',
                 '`/config legit_count so`: chỉnh số legit hiện tại và đổi tên kênh legit.',
                 '`/config check_emoji`: kiểm tra 3 emoji legit và quyền của bot.',
+                '`/config debug`: chẩn đoán server hiện tại (kênh legit, quyền, emoji, role mốc, hoạt động legit gần nhất). Dùng khi 1 server không react.',
+                '`/moc_role add|remove|list|che_do|sync|kiemtra`: role tự động theo tổng tiền khách đã mua (mốc chi tiêu).',
                 '`/set_kenhsold danhmuc`: danh mục chứa kênh tài khoản đã bán.'
             ].join('\n')
         });

@@ -274,6 +274,14 @@ async function recordCustomerPurchase(userId, amount, ordersCount = 1) {
     );
 }
 
+async function getCustomer(userId) {
+    return col('customers').findOne({ _id: String(userId) });
+}
+
+async function getAllCustomers() {
+    return col('customers').find({}).toArray();
+}
+
 async function getTopCustomers(limit = 10) {
     return col('customers').find({}).sort({ totalSpent: -1 }).limit(limit).toArray();
 }
@@ -322,6 +330,6 @@ module.exports = {
     getStaffQR, saveStaffQR,
     getTicket, isTicketChannel, saveTicket, updateTicket, deleteTicket, listTickets, getTicketByUsername, lockTicketConfirm, markTicketRevenue, countOpenTicketsByBuyer,
     getSetting, saveSetting, getSettingsWithPrefix, nextLegitNumber,
-    recordCustomerPurchase, getTopCustomers,
+    recordCustomerPurchase, getCustomer, getAllCustomers, getTopCustomers,
     scheduleVouchReminder, getDueReminders, claimReminder, advanceReminder, deleteReminder, clearRemindersForBuyer
 };

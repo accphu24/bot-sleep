@@ -5,6 +5,7 @@ const { isOwnerId } = require('../utils/permissions');
 const { cfg, cfgSource, isLegitEnabled, legitChannelFor } = require('../utils/runtime');
 const { CONFIG_KEYS, setConfig, setLegitEnabled, setLegitChannel } = require('../utils/config');
 const { legitName, scheduleLegitRename } = require('../utils/legit');
+const { diagnoseGuild, formatDiagnosis } = require('../utils/diagnostics');
 
 const choices = CONFIG_KEYS.map(k => ({ name: k.name, value: k.value }));
 const SOURCE_TEXT = { db: '(đặt bằng /config)', env: '(từ biến môi trường)', none: '' };
@@ -20,6 +21,7 @@ module.exports = {
             .addStringOption(o => o.setName('muc').setDescription('Mục cần xóa').setRequired(true).addChoices(...choices)))
         .addSubcommand(sub => sub.setName('show').setDescription('Xem cấu hình hiện tại'))
         .addSubcommand(sub => sub.setName('check_emoji').setDescription('Kiểm tra 3 emoji legit và quyền của bot trong kênh legit'))
+        .addSubcommand(sub => sub.setName('debug').setDescription('Chẩn đoán server này: kênh legit, quyền, emoji, role mốc và hoạt động legit gần nhất'))
         .addSubcommand(sub => sub.setName('legit_dem').setDescription('Bật / tắt đếm số legit cho server này (tắt = chỉ react emoji)')
             .addStringOption(o => o.setName('trangthai').setDescription('Bật hay tắt đếm số legit').setRequired(true)
                 .addChoices({ name: 'Bật', value: 'on' }, { name: 'Tắt', value: 'off' })))
@@ -54,6 +56,15 @@ module.exports = {
                 content: `✅ Đã xóa cài đặt **${label(key)}**.` + (fallback ? ` Đang dùng giá trị biến môi trường: <#${fallback}>` : ' Hiện chưa có giá trị nào.'),
                 flags: MessageFlags.Ephemeral
             });
+        }
+
+        if (sub === 'debug') {
+            if (!interaction.guild) return await interaction.reply({ content: '❌ Lệnh này chỉ dùng trong server.', flags: MessageFlags.Ephemeral });
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+            const d = await diagnoseGuild(interaction.client, interaction.guild);
+            let text = formatDiagnosis(d, { discord: true });
+            if (text.length > 1950) text = text.slice(0, 1950) + '…';
+            return await interaction.editReply({ content: text, allowedMentions: { parse: [] } });
         }
 
         if (sub === 'check_emoji') {

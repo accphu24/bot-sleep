@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node index.js",
     "migrate": "node scripts/migrate-json-to-mongo.js",
-    "test": "node tests/run.js"
+    "test": "node tests/run.js && node tests/milestones.test.js"
   },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.100",
