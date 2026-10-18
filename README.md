@@ -33,6 +33,7 @@ Bot cần ở server chứa các emoji trên, và có quyền Manage Channels, A
 Chỉnh số hiện tại bằng `/config legit_count so:632` (legit kế tiếp là 633).
 
 ## Lệnh cho Owner
+- `/owner add|remove|list`: thêm / bớt **Owner phụ** (đủ quyền Owner). Chỉ Owner gốc (`OWNER_ID`) thêm / bớt được, Owner gốc không thể bị bỏ.
 - `/staff add|remove|list|role`: quản lý Staff.
 - `/config set|clear|show|legit_count`: quản lý kênh / danh mục của bot.
 - `/set_kenhsold danhmuc`: danh mục chứa kênh đã bán.

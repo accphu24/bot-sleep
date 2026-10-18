@@ -31,7 +31,7 @@ const { sendTranscript } = require('./utils/transcript');
 const { stickyCache } = require('./utils/cache');
 const { buildHelpEmbed } = require('./utils/help');
 const { buildLeaderboardPayload, refreshLeaderboardMessage } = require('./commands/leaderboard');
-const { cfg, getExtraStaff } = require('./utils/runtime');
+const { cfg, getExtraStaff, getExtraOwners } = require('./utils/runtime');
 const { loadConfig } = require('./utils/config');
 const { scheduleLegitRename } = require('./utils/legit');
 
@@ -361,7 +361,7 @@ async function handleBuy(interaction) {
             alreadyAdded.add(sellerId.trim());
         }
         // Staff thêm bằng /staff add cần thấy ticket để dùng .close
-        for (const staffUserId of getExtraStaff()) {
+        for (const staffUserId of [...getExtraStaff(), ...getExtraOwners()]) {
             if (alreadyAdded.has(staffUserId) || staffUserId === ownerId?.trim()) continue;
             permissionOverwrites.push({ id: staffUserId, type: OverwriteType.Member, allow: rw });
             alreadyAdded.add(staffUserId);
@@ -787,7 +787,7 @@ async function handleClose(interaction) {
 // Lệnh slash chỉ dành cho Owner/Staff
 const STAFF_RESTRICTED_COMMANDS = ['restock', 'leaderboard', 'set_qr', 'skin', 'done', 'stock', 'add_acc', 'sticky'];
 // Lệnh chỉ Owner dùng được
-const OWNER_ONLY_COMMANDS = ['staff', 'config', 'set_kenhsold'];
+const OWNER_ONLY_COMMANDS = ['staff', 'config', 'set_kenhsold', 'owner'];
 
 async function handleInteraction(interaction) {
     try {

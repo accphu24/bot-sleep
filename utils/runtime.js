@@ -2,6 +2,7 @@
 // Ưu tiên: /config (lưu DB) > biến môi trường (Railway) > rỗng.
 const overrides = new Map();
 const extraStaff = new Set();
+const extraOwners = new Set();
 
 function cfg(name) {
     const o = overrides.get(name);
@@ -22,6 +23,13 @@ const setOverride = (name, value) => {
     else overrides.set(name, String(value));
 };
 
+const getExtraOwners = () => [...extraOwners];
+const isExtraOwner = (userId) => extraOwners.has(String(userId));
+const setExtraOwners = (ids) => {
+    extraOwners.clear();
+    for (const id of ids || []) extraOwners.add(String(id));
+};
+
 const clearOverrides = () => overrides.clear();
 
 const getExtraStaff = () => [...extraStaff];
@@ -31,4 +39,4 @@ const setExtraStaff = (ids) => {
     for (const id of ids || []) extraStaff.add(String(id));
 };
 
-module.exports = { cfg, cfgSource, setOverride, clearOverrides, getExtraStaff, isExtraStaff, setExtraStaff };
+module.exports = { cfg, cfgSource, setOverride, clearOverrides, getExtraOwners, isExtraOwner, setExtraOwners, getExtraStaff, isExtraStaff, setExtraStaff };

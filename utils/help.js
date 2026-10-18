@@ -48,6 +48,7 @@ function buildHelpEmbed(member) {
         embed.addFields({
             name: '👑 Chỉ Owner: quản lý staff và kênh',
             value: [
+                '`/owner add|remove|list`: thêm / bớt Owner phụ (chỉ Owner gốc thêm / bớt được).',
                 '`/staff add|remove|list`: thêm / bớt / xem staff. `/staff role`: đặt role Staff.',
                 '`/config set|clear|show`: đặt kênh legit, vouch, stock, ticket, sold, bill, transcript... không cần sửa biến Railway.',
                 '`/config legit_count so`: chỉnh số legit hiện tại (vd 632) và đổi tên kênh legit.',

@@ -1,6 +1,6 @@
 const { SlashCommandBuilder, EmbedBuilder, MessageFlags } = require('discord.js');
 const { isOwnerId } = require('../utils/permissions');
-const { cfg, getExtraStaff } = require('../utils/runtime');
+const { cfg, getExtraStaff, getExtraOwners } = require('../utils/runtime');
 const { addStaffUser, removeStaffUser, setConfig } = require('../utils/config');
 
 module.exports = {
@@ -52,7 +52,7 @@ module.exports = {
             .setTitle('👥 Danh sách Staff / Owner')
             .setColor('#00FFAA')
             .setDescription(
-                `**Owner:** <@${process.env.OWNER_ID}>\n` +
+                `**Owner:** <@${process.env.OWNER_ID}>${getExtraOwners().map(id => ` <@${id}>`).join('')}\n` +
                 `**Role Staff:** ${roleId ? `<@&${roleId}>` : '*(chưa đặt)*'}\n` +
                 `**Staff thêm bằng /staff add (${users.length}):**\n` +
                 (users.length ? users.map(id => `• <@${id}>`).join('\n') : '*(trống)*'))

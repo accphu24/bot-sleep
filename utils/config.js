@@ -27,6 +27,8 @@ async function loadConfig() {
     }
     const staff = await db.getSetting('STAFF_USERS', []);
     runtime.setExtraStaff(Array.isArray(staff) ? staff : []);
+    const owners = await db.getSetting('OWNER_USERS', []);
+    runtime.setExtraOwners(Array.isArray(owners) ? owners : []);
 }
 
 async function setConfig(name, value) {
@@ -52,4 +54,21 @@ async function removeStaffUser(userId) {
     return had;
 }
 
-module.exports = { CONFIG_KEYS, loadConfig, setConfig, addStaffUser, removeStaffUser };
+async function addOwnerUser(userId) {
+    const list = new Set(runtime.getExtraOwners());
+    const had = list.has(String(userId));
+    list.add(String(userId));
+    await db.saveSetting('OWNER_USERS', [...list]);
+    runtime.setExtraOwners([...list]);
+    return !had;
+}
+
+async function removeOwnerUser(userId) {
+    const list = new Set(runtime.getExtraOwners());
+    const had = list.delete(String(userId));
+    await db.saveSetting('OWNER_USERS', [...list]);
+    runtime.setExtraOwners([...list]);
+    return had;
+}
+
+module.exports = { addOwnerUser, removeOwnerUser, CONFIG_KEYS, loadConfig, setConfig, addStaffUser, removeStaffUser };

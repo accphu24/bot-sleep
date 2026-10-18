@@ -167,7 +167,7 @@ const msgFor = (channel, authorId, content, member) => {
     await test('mọi lệnh nạp được và toJSON() không lỗi', () => {
         for (const cmd of client.commands.values()) assert.ok(cmd.data.toJSON().name);
         assert.ok(client.commands.has('sticky') && client.commands.has('done'));
-        assert.ok(client.commands.has('staff') && client.commands.has('config'));
+        assert.ok(client.commands.has('staff') && client.commands.has('config') && client.commands.has('owner'));
     });
 
     console.log('\n[3] Tên kênh');
@@ -601,6 +601,40 @@ const msgFor = (channel, authorId, content, member) => {
         await index.handleInteraction(mkCmd('config', 'legit_count', { opts: { int: 632 } }));
         assert.equal(legitCh.name, '『✅』𝙇𝙀𝙂𝙄𝙏-632');
         assert.equal(await db.getSetting('LEGIT_COUNT'), 633);
+    });
+    await test('/owner: chỉ Owner gốc thêm/bớt; Owner phụ có đủ quyền Owner nhưng không tự thêm Owner khác', async () => {
+        const { isOwnerId, checkStaffOrOwner } = require(path.join(root, 'utils/permissions'));
+        const co = { id: '800000000000000060', bot: false };
+        const other = { id: '800000000000000061', bot: false };
+
+        const denied = mkCmd('owner', 'add', { user: SELLER, opts: { user: co } });
+        await index.handleInteraction(denied);
+        assert.ok(JSON.stringify(denied.replies).includes('chỉ dành riêng cho Owner'));
+        assert.equal(isOwnerId(co.id), false);
+
+        await index.handleInteraction(mkCmd('owner', 'add', { opts: { user: co } }));
+        assert.equal(isOwnerId(co.id), true);
+        assert.equal(checkStaffOrOwner(makeMember(co.id)), true);
+        assert.deepEqual(await db.getSetting('OWNER_USERS'), [co.id]);
+
+        // Owner phụ dùng được /config, nhưng không thêm được Owner khác
+        const cfgUse = mkCmd('config', 'set', { user: co.id, opts: { str: 'BILL_ID', channel: { id: '666666666666666666' } } });
+        await index.handleInteraction(cfgUse);
+        assert.equal(runtime.cfg('BILL_ID'), '666666666666666666');
+        await index.handleInteraction(mkCmd('config', 'clear', { user: co.id, opts: { str: 'BILL_ID' } }));
+        const tryAdd = mkCmd('owner', 'add', { user: co.id, opts: { user: other } });
+        await index.handleInteraction(tryAdd);
+        assert.ok(JSON.stringify(tryAdd.replies).includes('Owner gốc'));
+        assert.equal(isOwnerId(other.id), false);
+
+        // Không bỏ được Owner gốc
+        const rmRoot = mkCmd('owner', 'remove', { opts: { user: { id: OWNER, bot: false } } });
+        await index.handleInteraction(rmRoot);
+        assert.ok(JSON.stringify(rmRoot.replies).includes('Không thể bỏ Owner gốc'));
+        assert.equal(isOwnerId(OWNER), true);
+
+        await index.handleInteraction(mkCmd('owner', 'remove', { opts: { user: co } }));
+        assert.equal(isOwnerId(co.id), false);
     });
     await test('loadConfig nạp lại cấu hình + staff từ DB sau khi khởi động lại', async () => {
         const { loadConfig } = require(path.join(root, 'utils/config'));
