@@ -20,25 +20,26 @@ function buildHelpEmbed(member) {
     if (checkStaffOrOwner(member)) {
         embed.addFields(
             {
-                name: '🛠️ Dành cho Staff / Owner: thêm và đăng bán',
+                name: '💬 Staff / Owner: lệnh prefix',
                 value: [
-                    '`/add_acc`: mở form dán thông tin tài khoản vào kho (bot mã hóa mật khẩu).',
-                    '`/stock acc username price`: đăng card bán kèm nút BUY. Tùy chọn: capes, rank, statshpx, statsdonut.',
-                    '`/set_qr bank_name account_number bank_type`: cài ngân hàng để bot tạo mã VietQR.',
-                    '`/restock`: đăng danh sách các kênh đang còn hàng.'
+                    '`.close`: đóng ticket (chỉ Staff/Owner, gõ trong kênh ticket).',
+                    '`.resend`: gửi lại thông tin đăng nhập qua DM khi DM lỗi (trong ticket).',
+                    '`.vietqr số_tiền ghi_chú`: tạo mã VietQR nhanh trong kênh hiện tại.',
+                    '`sold`: gõ trong kênh bán hàng để đánh dấu đã bán ngoài hệ thống (không cần dấu chấm).'
                 ].join('\n')
             },
             {
-                name: '🛠️ Dành cho Staff / Owner: xử lý đơn',
+                name: '🛠️ Staff / Owner: lệnh slash',
                 value: [
-                    'Trong ticket: nút **Confirm** (xác nhận đã nhận tiền, bot giao hàng qua DM), nút **Gửi lại thông tin** hoặc gõ `.resend` (khi DM lỗi).',
-                    '`.close`: **chỉ Staff/Owner** gõ trong ticket để đóng ticket (khách không thể tự đóng).',
-                    '`sold`: gõ trong kênh bán hàng để đánh dấu đã bán ngoài hệ thống (không cần dấu chấm).',
-                    '`.vietqr số_tiền ghi_chú`: tạo mã VietQR nhanh trong kênh hiện tại.',
+                    '`/add_acc`: mở form dán thông tin tài khoản vào kho (bot mã hóa mật khẩu).',
+                    '`/stock acc username price`: đăng card bán kèm nút BUY (tùy chọn: capes, rank, statshpx, statsdonut).',
+                    '`/set_qr bank_name account_number bank_type`: cài ngân hàng để bot tạo VietQR.',
+                    '`/restock`: đăng danh sách các kênh đang còn hàng.',
                     '`/done customer amount`: ghi doanh thu thủ công (không dùng nếu đã Confirm).',
                     '`/leaderboard`: bảng xếp hạng khách mua nhiều nhất.',
-                    '`/sticky set` và `/sticky remove`: ghim tin nhắn tự động ở kênh.',
-                    '`/skin username`: xem skin Minecraft.'
+                    '`/sticky set|remove`: ghim tin nhắn tự động ở kênh.',
+                    '`/skin username`: xem skin Minecraft.',
+                    'Trong ticket: nút **Confirm** và nút **Gửi lại thông tin**.'
                 ].join('\n')
             }
         );
@@ -46,13 +47,14 @@ function buildHelpEmbed(member) {
 
     if (isOwnerId(member?.id)) {
         embed.addFields({
-            name: '👑 Chỉ Owner: quản lý staff và kênh',
+            name: '👑 Chỉ Owner',
             value: [
-                '`/owner add|remove|list`: thêm / bớt Owner phụ (chỉ Owner gốc thêm / bớt được).',
-                '`/staff add|remove|list`: thêm / bớt / xem staff. `/staff role`: đặt role Staff.',
-                '`/config set|clear|show`: đặt kênh legit, vouch, stock, ticket, sold, bill, transcript... không cần sửa biến Railway.',
-                '`/config legit_count so`: chỉnh số legit hiện tại (vd 632) và đổi tên kênh legit.',
-                '`/set_kenhsold danhmuc`: chọn danh mục chứa kênh tài khoản đã bán.'
+                '`/owner add|remove|list`: Owner phụ (chỉ Owner gốc thêm / bớt được).',
+                '`/staff add|remove|list|role`: quản lý Staff và role Staff.',
+                '`/config set|clear|show`: đặt kênh legit, vouch, stock, ticket, sold, bill, transcript...',
+                '`/config legit_count so`: chỉnh số legit hiện tại và đổi tên kênh legit.',
+                '`/config check_emoji`: kiểm tra 3 emoji legit và quyền của bot.',
+                '`/set_kenhsold danhmuc`: danh mục chứa kênh tài khoản đã bán.'
             ].join('\n')
         });
     }

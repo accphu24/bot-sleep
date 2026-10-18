@@ -19,6 +19,9 @@ module.exports = {
         '<a:CanhXanh:1556987445437014116> <:minecraft_accept:1556987449996218409> <a:CanhXanh:1541014174312828968>'
     ).split(/[\s,]+/).filter(Boolean),
 
+    // Emoji thường dùng thay thế khi 1 emoji custom không thả được (vẫn luôn đủ 3 reaction)
+    LEGIT_FALLBACK_REACTIONS: ['✅', '☑️', '🟢'],
+
     // Tên kênh legit = prefix + số (vd: 『✅』𝙇𝙀𝙂𝙄𝙏-632). Discord giới hạn đổi tên 2 lần / 10 phút
     LEGIT_CHANNEL_PREFIX: '『✅』𝙇𝙀𝙂𝙄𝙏-',
     LEGIT_RENAME_INTERVAL_MS: 310_000,

@@ -925,13 +925,16 @@ function onLegitCooldown(userId) {
 async function reactLegit(message) {
     const number = await db.nextLegitNumber(C.LEGIT_START);
 
-    for (const emoji of C.LEGIT_REACTIONS) {
+    for (const [i, emoji] of C.LEGIT_REACTIONS.entries()) {
         try {
             await message.react(emoji);
-            await new Promise(r => setTimeout(r, 200));
         } catch (err) {
-            console.warn(`[LEGIT] Không thể thả emoji ${emoji} (bot cần ở server chứa emoji này):`, err.message);
+            // Thường do bot chưa ở server chứa emoji, emoji đã bị xóa, hoặc kênh thiếu quyền Use External Emojis.
+            // Dùng /config check_emoji để xem emoji nào lỗi. Vẫn thả emoji thay thế để luôn đủ 3 reaction.
+            console.warn(`[LEGIT] Không thả được emoji ${emoji} (mã ${err.code || 'n/a'}): ${err.message}`);
+            await message.react(C.LEGIT_FALLBACK_REACTIONS[i] || '✅').catch(() => null);
         }
+        await new Promise(r => setTimeout(r, 200));
     }
 
     scheduleLegitRename(message.channel, number);

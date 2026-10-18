@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, EmbedBuilder, MessageFlags } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, MessageFlags, PermissionFlagsBits } = require('discord.js');
 const db = require('../utils/db');
 const C = require('../utils/constants');
 const { isOwnerId } = require('../utils/permissions');
@@ -19,6 +19,7 @@ module.exports = {
         .addSubcommand(sub => sub.setName('clear').setDescription('Xóa cài đặt bằng lệnh (quay về biến môi trường)')
             .addStringOption(o => o.setName('muc').setDescription('Mục cần xóa').setRequired(true).addChoices(...choices)))
         .addSubcommand(sub => sub.setName('show').setDescription('Xem cấu hình hiện tại'))
+        .addSubcommand(sub => sub.setName('check_emoji').setDescription('Kiểm tra 3 emoji legit và quyền của bot trong kênh legit'))
         .addSubcommand(sub => sub.setName('legit_count').setDescription('Chỉnh số legit hiện tại (và đổi tên kênh legit)')
             .addIntegerOption(o => o.setName('so').setDescription('Số legit đang hiển thị, vd 632 (legit kế tiếp sẽ là 633)')
                 .setRequired(true).setMinValue(0))),
@@ -46,6 +47,36 @@ module.exports = {
             return await interaction.reply({
                 content: `✅ Đã xóa cài đặt **${label(key)}**.` + (fallback ? ` Đang dùng giá trị biến môi trường: <#${fallback}>` : ' Hiện chưa có giá trị nào.'),
                 flags: MessageFlags.Ephemeral
+            });
+        }
+
+        if (sub === 'check_emoji') {
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+            const lines = [];
+            for (const emoji of C.LEGIT_REACTIONS) {
+                const m = String(emoji).match(/^<a?:(\w+):(\d+)>$/);
+                if (!m) { lines.push(`✅ ${emoji} (emoji thường, luôn dùng được)`); continue; }
+                const found = interaction.client.emojis.cache.get(m[2]);
+                lines.push(found
+                    ? `✅ ${emoji} \`${m[1]}\` (${m[2]}): bot thấy, thuộc server **${found.guild?.name || '?'}**`
+                    : `❌ \`${m[1]}\` (${m[2]}): bot **không thấy** emoji này. Bot chưa ở server chứa emoji, hoặc emoji đã bị xóa.`);
+            }
+
+            const perms = [];
+            const legitId = cfg('AUTOREACTER_VOUCH');
+            const ch = legitId ? await interaction.client.channels.fetch(legitId).catch(() => null) : null;
+            const mine = ch?.permissionsFor?.(interaction.client.user);
+            if (!legitId) perms.push('⚠️ Chưa đặt kênh legit (dùng `/config set`).');
+            else if (!mine) perms.push('⚠️ Không đọc được quyền của bot trong kênh legit.');
+            else {
+                for (const [flag, label] of [['AddReactions', 'Add Reactions'], ['UseExternalEmojis', 'Use External Emojis'],
+                    ['ReadMessageHistory', 'Read Message History'], ['ManageChannels', 'Manage Channels (đổi tên kênh)']]) {
+                    perms.push(`${mine.has(PermissionFlagsBits[flag]) ? '✅' : '❌'} ${label}`);
+                }
+            }
+            return await interaction.editReply({
+                content: `**Emoji legit**\n${lines.join('\n')}\n\n**Quyền của bot trong kênh legit**\n${perms.join('\n')}\n\n` +
+                    '*Emoji ❌: mời bot vào server chứa emoji đó, hoặc up emoji vào server shop rồi đặt biến `LEGIT_REACT_EMOJIS`.*'
             });
         }
 

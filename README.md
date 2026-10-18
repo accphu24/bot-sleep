@@ -31,6 +31,29 @@ Tin đúng mẫu `+1 legit <@người_bán> ...` thì bot: +1 bộ đếm, react
 Discord chỉ cho đổi tên kênh 2 lần / 10 phút nên bot đổi tối đa 1 lần / ~5 phút (luôn lấy số mới nhất).
 Bot cần ở server chứa các emoji trên, và có quyền Manage Channels, Add Reactions, Use External Emojis trong kênh legit.
 Chỉnh số hiện tại bằng `/config legit_count so:632` (legit kế tiếp là 633).
+Nếu thiếu emoji: chạy `/config check_emoji` để biết emoji nào bot không thấy và quyền còn thiếu. Khi 1 emoji lỗi, bot thả emoji thường thay thế để luôn đủ 3 reaction.
+
+## Danh sách lệnh
+**Prefix (gõ trong chat)**
+| Lệnh | Ai dùng | Tác dụng |
+|---|---|---|
+| `.help` | mọi người | xem hướng dẫn (Staff/Owner thấy thêm lệnh) |
+| `.av [@user \| id]` | mọi người | xem avatar |
+| `.vietqr <số tiền> [ghi chú]` | Staff/Owner | tạo mã VietQR nhanh |
+| `sold` (không có dấu chấm) | Staff/Owner (người tạo acc hoặc Owner) | đánh dấu kênh bán hàng đã bán ngoài hệ thống |
+| `.close` | Staff/Owner, trong ticket | đóng ticket |
+| `.resend` | Staff/Owner/seller, trong ticket | gửi lại thông tin đăng nhập qua DM |
+| `+1 legit @người_bán ...` | khách, trong kênh legit | không phải lệnh: bot tự đếm, react, đổi tên kênh |
+
+**Slash**
+| Lệnh | Ai dùng |
+|---|---|
+| `/add_acc`, `/stock acc`, `/set_qr`, `/restock`, `/done`, `/leaderboard`, `/sticky set\|remove`, `/skin` | Staff/Owner |
+| `/set_kenhsold`, `/config set\|clear\|show\|legit_count\|check_emoji`, `/staff add\|remove\|list\|role` | Owner |
+| `/owner list` | Owner |
+| `/owner add\|remove` | Owner gốc (`OWNER_ID`) |
+
+**Nút:** Confirm, Gửi lại thông tin (trong ticket), BUY, Cách mua (trên card), Làm mới (bảng xếp hạng).
 
 ## Lệnh cho Owner
 - `/owner add|remove|list`: thêm / bớt **Owner phụ** (đủ quyền Owner). Chỉ Owner gốc (`OWNER_ID`) thêm / bớt được, Owner gốc không thể bị bỏ.

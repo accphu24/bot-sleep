@@ -397,6 +397,21 @@ const msgFor = (channel, authorId, content, member) => {
         legitUtil.scheduleLegitRename(legitCh, 634, { force: true });
         assert.equal(legitCh.name, '『✅』𝙇𝙀𝙂𝙄𝙏-634');
     });
+    await test('1 emoji legit lỗi: bot vẫn thả đủ 3 reaction (thay bằng emoji thường), không crash', async () => {
+        legitUtil.resetLegitRenameState();
+        const legitCh = registry.get(LEGIT_CH);
+        const m = msgFor(legitCh, '800000000000000090', `+1 legit <@${SELLER}> x`);
+        m.react = async (e) => {
+            if (e.includes('1541014174312828968')) throw Object.assign(new Error('Unknown Emoji'), { code: 10014 });
+            m.reacts.push(e);
+        };
+        const warn = console.warn; console.warn = () => {};
+        await index.handleMessage(m);
+        console.warn = warn;
+        assert.equal(m.reacts.length, 3);
+        assert.equal(m.reacts[0], '<a:CanhXanh:1556987445437014116>');
+        assert.equal(m.reacts[2], '🟢');
+    });
     await test('chống spam kênh legit: cùng 1 người gửi liên tiếp chỉ đếm 1 lần', async () => {
         const old = C.LEGIT_COOLDOWN_SEC; C.LEGIT_COOLDOWN_SEC = 60;
         const legitCh = registry.get(LEGIT_CH);
@@ -635,6 +650,29 @@ const msgFor = (channel, authorId, content, member) => {
 
         await index.handleInteraction(mkCmd('owner', 'remove', { opts: { user: co } }));
         assert.equal(isOwnerId(co.id), false);
+    });
+    await test('/config check_emoji báo emoji nào bot thấy / không thấy, và quyền trong kênh legit', async () => {
+        const fakeEmoji = { id: '1556987445437014116', guild: { name: 'Drew Store' } };
+        client.guilds.cache.set('GFAKE', { id: 'GFAKE', available: true, emojis: { cache: new Collection([[fakeEmoji.id, fakeEmoji]]) } });
+        const it = mkCmd('config', 'check_emoji');
+        await index.handleInteraction(it);
+        client.guilds.cache.delete('GFAKE');
+        const out = JSON.stringify(it.edits);
+        assert.ok(out.includes('thuộc server **Drew Store**'));
+        assert.ok(out.includes('1541014174312828968') && out.includes('không thấy'));
+    });
+    await test('.help: Staff thấy đủ lệnh prefix + slash, Owner thấy thêm lệnh Owner, nội dung không vượt giới hạn Discord', async () => {
+        const { buildHelpEmbed } = require(path.join(root, 'utils/help'));
+        const text = (m) => JSON.stringify(buildHelpEmbed(m).toJSON());
+        const guest = text(makeMember('800000000000000001'));
+        assert.ok(!guest.includes('.close') && !guest.includes('/staff'));
+        const staff = text(staffMember());
+        for (const c of ['.close', '.resend', '.vietqr', 'sold', '/add_acc', '/stock', '/set_qr', '/restock', '/done', '/leaderboard', '/sticky', '/skin']) assert.ok(staff.includes(c), c);
+        assert.ok(!staff.includes('/owner'));
+        const owner = buildHelpEmbed(makeMember(OWNER)).toJSON();
+        const ownerText = JSON.stringify(owner);
+        for (const c of ['/owner', '/staff', '/config', 'check_emoji', '/set_kenhsold']) assert.ok(ownerText.includes(c), c);
+        for (const f of owner.fields) assert.ok(f.value.length <= 1024, f.name);
     });
     await test('loadConfig nạp lại cấu hình + staff từ DB sau khi khởi động lại', async () => {
         const { loadConfig } = require(path.join(root, 'utils/config'));
