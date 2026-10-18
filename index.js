@@ -29,6 +29,7 @@ const { generateTransferMemo, buildVietQRUrl } = require('./utils/vietqr');
 const { buildCardRow } = require('./utils/cardButtons');
 const { sendTranscript } = require('./utils/transcript');
 const { stickyCache } = require('./utils/cache');
+const { buildHelpEmbed } = require('./utils/help');
 const { buildLeaderboardPayload, refreshLeaderboardMessage } = require('./commands/leaderboard');
 
 const EPHEMERAL = MessageFlags.Ephemeral;
@@ -920,6 +921,7 @@ async function handleMessage(message) {
             if (await handleSoldMessage(message)) return;
         }
 
+        if (message.content.trim().toLowerCase() === ".help") { await message.channel.send({ embeds: [buildHelpEmbed(message.member)] }); return; }
         // 4. Lệnh .vietqr
         if (/^\.vietqr\b/i.test(message.content.trim())) {
             if (!checkStaffOrOwner(message.member)) {
