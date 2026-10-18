@@ -22,6 +22,7 @@ function buildHelpEmbed(member) {
             {
                 name: '💬 Staff / Owner: lệnh prefix',
                 value: [
+                    '`.panel`: đăng bảng chọn loại ticket (Thu đồ, Mua đồ, Mua acc pre, Partner, Builder) kèm 5 nút.',
                     '`.close`: đóng ticket (chỉ Staff/Owner, gõ trong kênh ticket).',
                     '`.resend`: gửi lại thông tin đăng nhập qua DM khi DM lỗi (trong ticket).',
                     '`.vietqr số_tiền ghi_chú`: tạo mã VietQR nhanh trong kênh hiện tại.',

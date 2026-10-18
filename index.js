@@ -30,6 +30,7 @@ const { buildCardRow } = require('./utils/cardButtons');
 const { sendTranscript } = require('./utils/transcript');
 const { stickyCache } = require('./utils/cache');
 const { buildHelpEmbed } = require('./utils/help');
+const { isPanelButton, buildPanelPayload, handlePanelButton } = require('./utils/panel');
 const { buildLeaderboardPayload, refreshLeaderboardMessage } = require('./commands/leaderboard');
 const { processDone } = require('./commands/done');
 const { cfg, getExtraStaff, getExtraOwners, isLegitEnabled, isLegitChannel, getLegitChannelMap } = require('./utils/runtime');
@@ -903,6 +904,7 @@ async function handleInteraction(interaction) {
                 return await interaction.reply({ embeds: [guideEmbed], flags: EPHEMERAL });
             }
 
+            if (isPanelButton(customId)) return await handlePanelButton(interaction, client);
             if (customId.startsWith('buy_acc_')) return await handleBuy(interaction);
             if (customId.startsWith('ticket_confirm_')) return await handleConfirm(interaction);
             if (customId.startsWith('ticket_resend_')) return await handleResend(interaction);
@@ -1177,6 +1179,16 @@ async function handleMessage(message) {
         // 3. Lệnh tin nhắn "sold"
         if (message.content.trim().toLowerCase() === 'sold') {
             if (await handleSoldMessage(message)) return;
+        }
+
+        // 3a. .panel (Staff/Owner): đăng bảng chọn loại ticket kèm 5 nút
+        if (message.content.trim().toLowerCase() === '.panel') {
+            if (!checkStaffOrOwner(message.member)) {
+                return await message.reply({ content: '❌ Lệnh `.panel` chỉ dành cho Staff hoặc Owner!' }).catch(() => null);
+            }
+            await message.channel.send(buildPanelPayload());
+            await message.delete().catch(() => null);
+            return;
         }
 
         if (message.content.trim().toLowerCase() === ".help") { await message.channel.send({ embeds: [buildHelpEmbed(message.member)] }); return; }
