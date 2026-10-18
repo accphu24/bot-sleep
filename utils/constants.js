@@ -19,7 +19,18 @@ module.exports = {
         '<a:CanhXanh:1556987445437014116> <:minecraft_accept:1556987449996218409> <a:CanhXanh:1541014174312828968>'
     ).split(/[\s,]+/).filter(Boolean),
 
-    // Emoji thường dùng thay thế khi 1 emoji custom không thả được (vẫn luôn đủ 3 reaction)
+    // Emoji DỰ PHÒNG cho emoji thứ 3 (cánh xanh): khi emoji thứ 3 không thả được, thử lần lượt 2 emoji này.
+    // Đổi bằng biến LEGIT_REACT_BACKUP_3 (cách nhau bằng dấu cách). Vị trí 1, 2 chưa có dự phòng riêng.
+    LEGIT_BACKUP_REACTIONS: [
+        [],
+        [],
+        fromEnv(
+            'LEGIT_REACT_BACKUP_3',
+            '<a:CanhXanh:1561268756850937876> <a:canhxanh2:1519732018215129090>'
+        ).split(/[\s,]+/).filter(Boolean)
+    ],
+
+    // Cuối cùng, nếu cả emoji dự phòng cũng lỗi thì dùng emoji thường này (vẫn luôn đủ 3 reaction)
     LEGIT_FALLBACK_REACTIONS: ['✅', '☑️', '🟢'],
 
     // Tên kênh legit = prefix + số (vd: 『✅』𝙇𝙀𝙂𝙄𝙏-632). Discord giới hạn đổi tên 2 lần / 10 phút

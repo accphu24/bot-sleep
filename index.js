@@ -992,16 +992,25 @@ async function reactLegit(message, { rename = true, source = 'tin-moi' } = {}) {
             log.debug('LEGIT', `react ${i + 1}/${C.LEGIT_REACTIONS.length} OK`, { ...ctx, emoji });
         } catch (err) {
             // Thường do bot chưa ở server chứa emoji, emoji đã bị xóa, hoặc kênh thiếu quyền Use External Emojis.
-            // Dùng /config check_emoji hoặc /config debug để xem. Vẫn thả emoji thay thế để luôn đủ 3 reaction.
-            log.warn('LEGIT', `react ${i + 1}/${C.LEGIT_REACTIONS.length} THẤT BẠI, thử emoji thay thế`, { ...ctx, emoji, ...errInfo(err), goiy: hint(err) });
-            const fb = C.LEGIT_FALLBACK_REACTIONS[i] || '✅';
-            try {
-                await message.react(fb);
-                results.push({ emoji, ok: true, fallback: fb });
-                log.debug('LEGIT', `react thay thế OK`, { ...ctx, emoji: fb });
-            } catch (err2) {
-                results.push({ emoji, ok: false, code: err2.code });
-                log.error('LEGIT', 'Emoji thay thế cũng THẤT BẠI (không react được gì)', { ...ctx, emoji: fb, ...errInfo(err2), goiy: hint(err2) });
+            // Dùng /config check_emoji hoặc /config debug để xem. Thử lần lượt emoji dự phòng của vị trí này,
+            // rồi tới emoji thường, để luôn đủ số reaction.
+            log.warn('LEGIT', `react ${i + 1}/${C.LEGIT_REACTIONS.length} THẤT BẠI, thử emoji dự phòng`, { ...ctx, emoji, ...errInfo(err), goiy: hint(err) });
+            const chain = [...(C.LEGIT_BACKUP_REACTIONS[i] || []), C.LEGIT_FALLBACK_REACTIONS[i] || '✅'];
+            let done = false;
+            for (const fb of chain) {
+                try {
+                    await message.react(fb);
+                    results.push({ emoji, ok: true, fallback: fb });
+                    log.debug('LEGIT', `react dự phòng OK`, { ...ctx, emoji: fb });
+                    done = true;
+                    break;
+                } catch (err2) {
+                    log.warn('LEGIT', 'Emoji dự phòng cũng THẤT BẠI, thử cái tiếp theo', { ...ctx, emoji: fb, ...errInfo(err2), goiy: hint(err2) });
+                    if (fb === chain[chain.length - 1]) {
+                        results.push({ emoji, ok: false, code: err2.code });
+                        log.error('LEGIT', 'Mọi emoji dự phòng đều THẤT BẠI (không react được gì)', { ...ctx, emoji: fb, ...errInfo(err2), goiy: hint(err2) });
+                    }
+                }
             }
         }
         await new Promise(r => setTimeout(r, 200));

@@ -412,7 +412,27 @@ const msgFor = (channel, authorId, content, member) => {
         console.warn = warn;
         assert.equal(m.reacts.length, 3);
         assert.equal(m.reacts[0], '<a:CanhXanh:1556987445437014116>');
-        assert.equal(m.reacts[2], '🟢');
+        assert.equal(m.reacts[2], '<a:CanhXanh:1561268756850937876>', 'emoji 3 lỗi -> dùng emoji dự phòng thứ nhất');
+    });
+    await test('emoji thứ 3 lỗi + dự phòng 1 lỗi -> dùng dự phòng 2; cả 3 lỗi -> emoji thường', async () => {
+        legitUtil.resetLegitRenameState();
+        const legitCh = registry.get(LEGIT_CH);
+        const bad = (...ids) => async function (e) {
+            if (ids.some(id => e.includes(id))) throw Object.assign(new Error('Unknown Emoji'), { code: 10014 });
+            this.reacts.push(e);
+        };
+        const warn = console.warn, err = console.error; console.warn = () => {}; console.error = () => {};
+        const m1 = msgFor(legitCh, '800000000000000091', `+1 legit <@${SELLER}> x`);
+        m1.react = bad('1541014174312828968', '1561268756850937876');
+        await index.handleMessage(m1);
+        const m2 = msgFor(legitCh, '800000000000000092', `+1 legit <@${SELLER}> y`);
+        m2.react = bad('1541014174312828968', '1561268756850937876', '1519732018215129090');
+        await index.handleMessage(m2);
+        console.warn = warn; console.error = err;
+        assert.equal(m1.reacts.length, 3);
+        assert.equal(m1.reacts[2], '<a:canhxanh2:1519732018215129090>');
+        assert.equal(m2.reacts.length, 3);
+        assert.equal(m2.reacts[2], '🟢');
     });
     await test('chống spam kênh legit: cùng 1 người gửi liên tiếp chỉ đếm 1 lần', async () => {
         const old = C.LEGIT_COOLDOWN_SEC; C.LEGIT_COOLDOWN_SEC = 60;
