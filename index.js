@@ -34,6 +34,7 @@ const { buildLeaderboardPayload, refreshLeaderboardMessage } = require('./comman
 const { cfg, getExtraStaff, getExtraOwners } = require('./utils/runtime');
 const { loadConfig } = require('./utils/config');
 const { scheduleLegitRename } = require('./utils/legit');
+const { createTextChannel, deleteChannel, parseChannelId } = require('./utils/channelManager');
 
 const EPHEMERAL = MessageFlags.Ephemeral;
 
@@ -785,7 +786,7 @@ async function handleClose(interaction) {
 // INTERACTION CREATE
 // ==========================================
 // Lệnh slash chỉ dành cho Owner/Staff
-const STAFF_RESTRICTED_COMMANDS = ['restock', 'leaderboard', 'set_qr', 'skin', 'done', 'stock', 'add_acc', 'sticky'];
+const STAFF_RESTRICTED_COMMANDS = ['restock', 'leaderboard', 'set_qr', 'skin', 'done', 'stock', 'add_acc', 'sticky', 'taokenh', 'xoakenh'];
 // Lệnh chỉ Owner dùng được
 const OWNER_ONLY_COMMANDS = ['staff', 'config', 'set_kenhsold', 'owner'];
 
@@ -1019,6 +1020,37 @@ async function handleMessage(message) {
         }
 
         if (message.content.trim().toLowerCase() === ".help") { await message.channel.send({ embeds: [buildHelpEmbed(message.member)] }); return; }
+        // 3b. Lệnh tạo / xóa kênh (Staff/Owner): `.taokenh abc` / `taokenh abc`, `.xoakenh #kenh` / `.xoakenh <id>`
+        {
+            const raw = message.content.trim();
+            const mk = raw.match(/^(\.?)(taokenh|xoakenh)(?:\s+([\s\S]*))?$/i);
+            if (mk) {
+                const hasDot = mk[1] === '.';
+                const cmdName = mk[2].toLowerCase();
+                const rest = (mk[3] || '').trim();
+                if (!checkStaffOrOwner(message.member)) {
+                    // gõ không dấu chấm mà không đủ quyền thì bỏ qua để khỏi làm phiền chat thường
+                    if (hasDot) await message.reply({ content: `❌ Lệnh \`.${cmdName}\` chỉ dành cho Staff hoặc Owner!` }).catch(() => null);
+                    if (hasDot) return;
+                } else if (cmdName === 'taokenh') {
+                    if (!rest) return await message.reply({ content: '⚠️ **Cú pháp:** `.taokenh <tên kênh>`' }).catch(() => null);
+                    const result = await createTextChannel(message.guild, rest, { parentId: message.channel.parentId });
+                    if (!result.ok) return await message.reply({ content: result.msg }).catch(() => null);
+                    return await message.reply({ content: `✅ Đã tạo kênh <#${result.channel.id}> (\`${result.channel.id}\`).` }).catch(() => null);
+                } else {
+                    const id = parseChannelId(rest.split(/\s+/)[0]);
+                    if (!id) return await message.reply({ content: '⚠️ **Cú pháp:** `.xoakenh #kênh` hoặc `.xoakenh <id kênh>`' }).catch(() => null);
+                    const target = await message.guild.channels.fetch(id).catch(() => null);
+                    if (!target) return await message.reply({ content: '❌ Không tìm thấy kênh đó trong server này.' }).catch(() => null);
+                    const isHere = target.id === message.channel.id;
+                    const result = await deleteChannel(target, { by: message.author.tag || message.author.username });
+                    if (!result.ok) return await message.reply({ content: result.msg }).catch(() => null);
+                    if (!isHere) await message.reply({ content: `🗑️ Đã xóa kênh **#${result.name}** (\`${result.id}\`).` }).catch(() => null);
+                    return;
+                }
+            }
+        }
+
         // 4. Lệnh .vietqr
         if (/^\.vietqr\b/i.test(message.content.trim())) {
             if (!checkStaffOrOwner(message.member)) {

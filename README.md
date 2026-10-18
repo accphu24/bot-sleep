@@ -41,6 +41,8 @@ Nếu thiếu emoji: chạy `/config check_emoji` để biết emoji nào bot kh
 | `.av [@user \| id]` | mọi người | xem avatar |
 | `.vietqr <số tiền> [ghi chú]` | Staff/Owner | tạo mã VietQR nhanh |
 | `sold` (không có dấu chấm) | Staff/Owner (người tạo acc hoặc Owner) | đánh dấu kênh bán hàng đã bán ngoài hệ thống |
+| `.taokenh <tên>` (hoặc `taokenh <tên>`) | Staff/Owner | tạo kênh mới, cùng danh mục với kênh đang gõ |
+| `.xoakenh #kênh \| <id>` (hoặc `xoakenh ...`) | Staff/Owner | xóa kênh (chặn kênh hệ thống trong `/config` và card còn hàng / đang có đơn) |
 | `.close` | Staff/Owner, trong ticket | đóng ticket |
 | `.resend` | Staff/Owner/seller, trong ticket | gửi lại thông tin đăng nhập qua DM |
 | `+1 legit @người_bán ...` | khách, trong kênh legit | không phải lệnh: bot tự đếm, react, đổi tên kênh |
@@ -48,7 +50,7 @@ Nếu thiếu emoji: chạy `/config check_emoji` để biết emoji nào bot kh
 **Slash**
 | Lệnh | Ai dùng |
 |---|---|
-| `/add_acc`, `/stock acc`, `/set_qr`, `/restock`, `/done`, `/leaderboard`, `/sticky set\|remove`, `/skin` | Staff/Owner |
+| `/add_acc`, `/stock acc`, `/set_qr`, `/restock`, `/done`, `/leaderboard`, `/sticky set\|remove`, `/skin`, `/taokenh ten [danhmuc]`, `/xoakenh kenh\|id` | Staff/Owner |
 | `/set_kenhsold`, `/config set\|clear\|show\|legit_count\|check_emoji`, `/staff add\|remove\|list\|role` | Owner |
 | `/owner list` | Owner |
 | `/owner add\|remove` | Owner gốc (`OWNER_ID`) |

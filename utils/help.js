@@ -25,7 +25,9 @@ function buildHelpEmbed(member) {
                     '`.close`: đóng ticket (chỉ Staff/Owner, gõ trong kênh ticket).',
                     '`.resend`: gửi lại thông tin đăng nhập qua DM khi DM lỗi (trong ticket).',
                     '`.vietqr số_tiền ghi_chú`: tạo mã VietQR nhanh trong kênh hiện tại.',
-                    '`sold`: gõ trong kênh bán hàng để đánh dấu đã bán ngoài hệ thống (không cần dấu chấm).'
+                    '`sold`: gõ trong kênh bán hàng để đánh dấu đã bán ngoài hệ thống (không cần dấu chấm).',
+                    '`.taokenh tên`: tạo kênh mới (cùng danh mục với kênh bạn gõ).',
+                    '`.xoakenh #kênh` hoặc `.xoakenh id`: xóa kênh (không xóa được kênh hệ thống / card còn hàng).'
                 ].join('\n')
             },
             {
@@ -39,6 +41,7 @@ function buildHelpEmbed(member) {
                     '`/leaderboard`: bảng xếp hạng khách mua nhiều nhất.',
                     '`/sticky set|remove`: ghim tin nhắn tự động ở kênh.',
                     '`/skin username`: xem skin Minecraft.',
+                    '`/taokenh ten [danhmuc]`, `/xoakenh kenh|id`: tạo / xóa kênh.',
                     'Trong ticket: nút **Confirm** và nút **Gửi lại thông tin**.'
                 ].join('\n')
             }

@@ -81,7 +81,8 @@ const guild = {
     channels: {
         cache: new Map(),
         created: [],
-        async create(opts) { const ch = makeChannel(opts.name); guild.channels.created.push({ ch, opts }); return ch; }
+        async create(opts) { const ch = makeChannel(opts.name, { parentId: opts.parent }); ch.type = opts.type; guild.channels.created.push({ ch, opts }); return ch; },
+        async fetch(id) { const ch = registry.get(String(id)); if (!ch) throw new Error('Unknown Channel'); return ch; }
     }
 };
 
@@ -667,7 +668,7 @@ const msgFor = (channel, authorId, content, member) => {
         const guest = text(makeMember('800000000000000001'));
         assert.ok(!guest.includes('.close') && !guest.includes('/staff'));
         const staff = text(staffMember());
-        for (const c of ['.close', '.resend', '.vietqr', 'sold', '/add_acc', '/stock', '/set_qr', '/restock', '/done', '/leaderboard', '/sticky', '/skin']) assert.ok(staff.includes(c), c);
+        for (const c of ['.close', '.resend', '.vietqr', 'sold', '/add_acc', '/stock', '/set_qr', '/restock', '/done', '/leaderboard', '/sticky', '/skin', '.taokenh', '.xoakenh', '/taokenh', '/xoakenh']) assert.ok(staff.includes(c), c);
         assert.ok(!staff.includes('/owner'));
         const owner = buildHelpEmbed(makeMember(OWNER)).toJSON();
         const ownerText = JSON.stringify(owner);
@@ -684,6 +685,105 @@ const msgFor = (channel, authorId, content, member) => {
         await db.saveSetting('CFG_KENH_2FA', null); await db.saveSetting('STAFF_USERS', null);
         await loadConfig();
         assert.equal(runtime.cfg('KENH_2FA'), '');
+    });
+
+
+    console.log('\n[X] Tạo / xóa kênh');
+    await test('.taokenh: Staff tạo kênh, tên được chuẩn hóa, cùng danh mục với kênh gõ lệnh', async () => {
+        const here = makeChannel('chat', { parentId: '600000000000000001' });
+        const before = guild.channels.created.length;
+        const m = msgFor(here, SELLER, '.taokenh Kênh Mới 123', staffMember());
+        await index.handleMessage(m);
+        assert.equal(guild.channels.created.length, before + 1);
+        const { ch, opts } = guild.channels.created[before];
+        assert.equal(opts.name, 'kênh-mới-123');
+        assert.equal(opts.parent, '600000000000000001');
+        assert.ok(JSON.stringify(m.replies).includes(ch.id));
+    });
+    await test('taokenh (không dấu chấm): Owner dùng được', async () => {
+        const here = makeChannel('chat2');
+        const before = guild.channels.created.length;
+        await index.handleMessage(msgFor(here, OWNER, 'taokenh abc', makeMember(OWNER)));
+        assert.equal(guild.channels.created.length, before + 1);
+        assert.equal(guild.channels.created[before].opts.name, 'abc');
+    });
+    await test('taokenh: khách thường không tạo được (có dấu chấm thì báo lỗi, không dấu chấm thì bỏ qua)', async () => {
+        const here = makeChannel('chat3');
+        const before = guild.channels.created.length;
+        const a = msgFor(here, '800000000000000001', '.taokenh abc');
+        await index.handleMessage(a);
+        const b = msgFor(here, '800000000000000001', 'taokenh abc');
+        await index.handleMessage(b);
+        assert.equal(guild.channels.created.length, before);
+        assert.ok(JSON.stringify(a.replies).includes('Staff'));
+        assert.equal(b.replies.length, 0);
+    });
+    await test('.taokenh thiếu tên: báo cú pháp, không tạo kênh', async () => {
+        const here = makeChannel('chat4');
+        const before = guild.channels.created.length;
+        const m = msgFor(here, SELLER, '.taokenh', staffMember());
+        await index.handleMessage(m);
+        assert.equal(guild.channels.created.length, before);
+        assert.ok(JSON.stringify(m.replies).includes('Cú pháp'));
+    });
+    await test('.xoakenh: xóa theo #mention và theo id; khách thường không xóa được', async () => {
+        const here = makeChannel('chat5');
+        const t1 = makeChannel('can-xoa-1'), t2 = makeChannel('can-xoa-2'), t3 = makeChannel('giu-lai');
+        await index.handleMessage(msgFor(here, SELLER, `.xoakenh <#${t1.id}>`, staffMember()));
+        assert.equal(t1.deleted, true);
+        await index.handleMessage(msgFor(here, OWNER, `xoakenh ${t2.id}`, makeMember(OWNER)));
+        assert.equal(t2.deleted, true);
+        await index.handleMessage(msgFor(here, '800000000000000001', `.xoakenh ${t3.id}`));
+        assert.equal(t3.deleted, false);
+    });
+    await test('.xoakenh: chặn kênh hệ thống, danh mục, card còn hàng; cho xóa card đã bán', async () => {
+        const here = makeChannel('chat6');
+        const sys = makeChannel('legit', { id: LEGIT_CH });
+        const cat = makeChannel('danh-muc'); cat.type = require('discord.js').ChannelType.GuildCategory;
+        const { cardCh } = await seedAccount('XoaKenhAcc');
+        for (const t of [sys, cat, cardCh]) {
+            const m = msgFor(here, SELLER, `.xoakenh ${t.id}`, staffMember());
+            await index.handleMessage(m);
+            assert.equal(t.deleted, false, t.name);
+            assert.ok(JSON.stringify(m.replies).includes('❌'), t.name);
+        }
+        await db.markAccountSold('XoaKenhAcc', {});
+        await index.handleMessage(msgFor(here, SELLER, `.xoakenh ${cardCh.id}`, staffMember()));
+        assert.equal(cardCh.deleted, true);
+    });
+    await test('.xoakenh: id sai / không có kênh -> báo lỗi, không crash', async () => {
+        const here = makeChannel('chat7');
+        const a = msgFor(here, SELLER, '.xoakenh abc', staffMember());
+        const b = msgFor(here, SELLER, '.xoakenh 123456789012345678', staffMember());
+        const c = msgFor(here, SELLER, '.xoakenh', staffMember());
+        for (const m of [a, b, c]) await index.handleMessage(m);
+        for (const m of [a, b, c]) assert.equal(m.replies.length, 1);
+    });
+    await test('/taokenh và /xoakenh (slash): Staff dùng được, khách bị từ chối', async () => {
+        const mkIt = (name, member, opts) => {
+            const it = { commandName: name, user: { id: member.id }, member, guild, channel: makeChannel('slash-here', { parentId: '600000000000000002' }),
+                replies: [], isChatInputCommand: () => true, isModalSubmit: () => false, isButton: () => false,
+                options: { getString: (k) => opts[k] ?? null, getChannel: (k) => opts[k] ?? null },
+                async reply(x) { it.replies.push(x); } };
+            it.channelId = it.channel.id;
+            return it;
+        };
+        const before = guild.channels.created.length;
+        const guest = mkIt('taokenh', makeMember('800000000000000001'), { ten: 'zzz' });
+        await index.handleInteraction(guest);
+        assert.equal(guild.channels.created.length, before);
+        const ok = mkIt('taokenh', staffMember(), { ten: 'slash kenh' });
+        await index.handleInteraction(ok);
+        assert.equal(guild.channels.created.length, before + 1);
+        assert.equal(guild.channels.created[before].opts.name, 'slash-kenh');
+        assert.equal(guild.channels.created[before].opts.parent, '600000000000000002');
+        const target = makeChannel('xoa-slash'); target.guildId = guild.id;
+        const del = mkIt('xoakenh', staffMember(), { kenh: target });
+        await index.handleInteraction(del);
+        assert.equal(target.deleted, true);
+        const guestDel = mkIt('xoakenh', makeMember('800000000000000001'), { id: makeChannel('khong-xoa').id });
+        await index.handleInteraction(guestDel);
+        assert.ok(JSON.stringify(guestDel.replies).includes('Staff'));
     });
 
     const failed = results.filter(r => !r[0]).length;
