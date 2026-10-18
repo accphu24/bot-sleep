@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, EmbedBuilder, MessageFlags, PermissionFlagsBits } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, MessageFlags, PermissionFlagsBits, ChannelType } = require('discord.js');
 const db = require('../utils/db');
 const C = require('../utils/constants');
 const { isOwnerId } = require('../utils/permissions');
@@ -39,11 +39,19 @@ module.exports = {
         if (sub === 'set') {
             const key = interaction.options.getString('muc');
             const channel = interaction.options.getChannel('kenh');
+            // Mục "Danh mục ..." bắt buộc phải chọn DANH MỤC (category), chọn nhầm kênh chat thì bot không chuyển kênh vào được
+            if ((key === 'SOLD_CATEGORY_ID' || key === 'TICKET_CATEGORY_ID') && channel.type !== undefined && channel.type !== ChannelType.GuildCategory) {
+                return await interaction.reply({
+                    content: `❌ **${label(key)}** phải là một **danh mục (category)**, nhưng <#${channel.id}> là kênh thường. ` +
+                        'Hãy chọn đúng danh mục (biểu tượng thư mục, tên thường viết HOA) trong ô `kenh`.',
+                    flags: MessageFlags.Ephemeral
+                });
+            }
             // Kênh legit lưu RIÊNG theo server (mỗi server 1 kênh legit), không ghi đè mục chung của server khác
             if (key === 'AUTOREACTER_VOUCH') await setLegitChannel(channel.guildId || interaction.guildId, channel.id);
             else await setConfig(key, channel.id);
             return await interaction.reply({
-                content: `✅ Đã đặt **${label(key)}** = <#${channel.id}>`, flags: MessageFlags.Ephemeral
+                content: `✅ Đã đặt **${label(key)}** = <#${channel.id}> (\`${channel.id}\`)`, flags: MessageFlags.Ephemeral
             });
         }
 

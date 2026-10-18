@@ -739,6 +739,15 @@ const msgFor = (channel, authorId, content, member) => {
         assert.equal(legitCh.name, '『✅』𝙇𝙀𝙂𝙄𝙏-632');
         assert.equal(await db.getSetting('LEGIT_COUNT_' + guild.id), 633);
     });
+    await test('/config set: mục Danh mục Sold chọn nhầm kênh thường bị từ chối, chọn đúng danh mục thì lưu', async () => {
+        const bad = mkCmd('config', 'set', { opts: { str: 'SOLD_CATEGORY_ID', channel: { id: '666666666666666601', type: 0 } } });
+        await index.handleInteraction(bad);
+        assert.ok(JSON.stringify(bad.replies).includes('phải là một **danh mục'), 'phải từ chối kênh thường');
+        assert.notEqual(runtime.cfg('SOLD_CATEGORY_ID'), '666666666666666601');
+        const good = mkCmd('config', 'set', { opts: { str: 'SOLD_CATEGORY_ID', channel: { id: SOLD_CAT, type: 4 } } });
+        await index.handleInteraction(good);
+        assert.equal(runtime.cfg('SOLD_CATEGORY_ID'), SOLD_CAT);
+    });
     await test('/owner: chỉ Owner gốc thêm/bớt; Owner phụ có đủ quyền Owner nhưng không tự thêm Owner khác', async () => {
         const { isOwnerId, checkStaffOrOwner } = require(path.join(root, 'utils/permissions'));
         const co = { id: '800000000000000060', bot: false };
