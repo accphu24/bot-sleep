@@ -55,6 +55,7 @@ function buildHelpEmbed(member) {
                 '`/owner add|remove|list`: Owner phụ (chỉ Owner gốc thêm / bớt được).',
                 '`/staff add|remove|list|role`: quản lý Staff và role Staff.',
                 '`/config set|clear|show`: đặt kênh legit, vouch, stock, ticket, sold, bill, transcript...',
+                '`/config legit_dem bat|tat`: bật / tắt tự đổi tên kênh legit (vẫn đếm + react, lưu theo từng server).',
                 '`/config legit_count so`: chỉnh số legit hiện tại và đổi tên kênh legit.',
                 '`/config check_emoji`: kiểm tra 3 emoji legit và quyền của bot.',
                 '`/set_kenhsold danhmuc`: danh mục chứa kênh tài khoản đã bán.'

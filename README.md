@@ -51,7 +51,7 @@ Nếu thiếu emoji: chạy `/config check_emoji` để biết emoji nào bot kh
 | Lệnh | Ai dùng |
 |---|---|
 | `/add_acc`, `/stock acc`, `/set_qr`, `/restock`, `/done`, `/leaderboard`, `/sticky set\|remove`, `/skin`, `/taokenh ten [danhmuc]`, `/xoakenh kenh\|id` | Staff/Owner |
-| `/set_kenhsold`, `/config set\|clear\|show\|legit_count\|check_emoji`, `/staff add\|remove\|list\|role` | Owner |
+| `/set_kenhsold`, `/config set\|clear\|show\|legit_dem\|legit_count\|check_emoji`, `/staff add\|remove\|list\|role` | Owner |
 | `/owner list` | Owner |
 | `/owner add\|remove` | Owner gốc (`OWNER_ID`) |
 
@@ -61,6 +61,7 @@ Nếu thiếu emoji: chạy `/config check_emoji` để biết emoji nào bot kh
 - `/owner add|remove|list`: thêm / bớt **Owner phụ** (đủ quyền Owner). Chỉ Owner gốc (`OWNER_ID`) thêm / bớt được, Owner gốc không thể bị bỏ.
 - `/staff add|remove|list|role`: quản lý Staff.
 - `/config set|clear|show|legit_count`: quản lý kênh / danh mục của bot.
+- `/config legit_dem bat|tat`: bật / tắt tự đổi tên kênh legit, lưu riêng theo ID từng server (mặc định bật). Khi tắt, bot vẫn đếm và react emoji, chỉ không đụng đến tên kênh.
 - `/set_kenhsold danhmuc`: danh mục chứa kênh đã bán.
 
 ## Chuyển dữ liệu từ bản cũ (JSON)

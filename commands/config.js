@@ -2,8 +2,8 @@ const { SlashCommandBuilder, EmbedBuilder, MessageFlags, PermissionFlagsBits } =
 const db = require('../utils/db');
 const C = require('../utils/constants');
 const { isOwnerId } = require('../utils/permissions');
-const { cfg, cfgSource } = require('../utils/runtime');
-const { CONFIG_KEYS, setConfig } = require('../utils/config');
+const { cfg, cfgSource, isLegitEnabled } = require('../utils/runtime');
+const { CONFIG_KEYS, setConfig, setLegitEnabled } = require('../utils/config');
 const { legitName, scheduleLegitRename } = require('../utils/legit');
 
 const choices = CONFIG_KEYS.map(k => ({ name: k.name, value: k.value }));
@@ -20,6 +20,9 @@ module.exports = {
             .addStringOption(o => o.setName('muc').setDescription('Mục cần xóa').setRequired(true).addChoices(...choices)))
         .addSubcommand(sub => sub.setName('show').setDescription('Xem cấu hình hiện tại'))
         .addSubcommand(sub => sub.setName('check_emoji').setDescription('Kiểm tra 3 emoji legit và quyền của bot trong kênh legit'))
+        .addSubcommand(sub => sub.setName('legit_dem').setDescription('Bật / tắt tự đổi tên kênh legit theo số đếm (server này)')
+            .addStringOption(o => o.setName('trangthai').setDescription('Bật hay tắt đổi tên kênh legit').setRequired(true)
+                .addChoices({ name: 'Bật', value: 'on' }, { name: 'Tắt', value: 'off' })))
         .addSubcommand(sub => sub.setName('legit_count').setDescription('Chỉnh số legit hiện tại (và đổi tên kênh legit)')
             .addIntegerOption(o => o.setName('so').setDescription('Số legit đang hiển thị, vd 632 (legit kế tiếp sẽ là 633)')
                 .setRequired(true).setMinValue(0))),
@@ -80,6 +83,20 @@ module.exports = {
             });
         }
 
+        if (sub === 'legit_dem') {
+            if (!interaction.guildId) {
+                return await interaction.reply({ content: '❌ Lệnh này chỉ dùng trong server.', flags: MessageFlags.Ephemeral });
+            }
+            const on = interaction.options.getString('trangthai') === 'on';
+            await setLegitEnabled(interaction.guildId, on);
+            return await interaction.reply({
+                content: on
+                    ? '✅ Đã **BẬT** đổi tên kênh legit cho server này (bot đếm, react và đổi tên kênh theo số legit).'
+                    : '⏸️ Đã **TẮT** đổi tên kênh legit cho server này (bot vẫn đếm và react emoji, chỉ không đụng đến tên kênh).',
+                flags: MessageFlags.Ephemeral
+            });
+        }
+
         if (sub === 'legit_count') {
             const shown = interaction.options.getInteger('so');
             await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -104,7 +121,7 @@ module.exports = {
         const embed = new EmbedBuilder()
             .setTitle('⚙️ Cấu hình kênh của bot')
             .setColor('#00FFAA')
-            .setDescription(lines.join('\n'))
+            .setDescription(lines.join('\n') + `\n• **Đổi tên kênh legit (server này)**: ${isLegitEnabled(interaction.guildId) ? '🟢 Bật' : '🔴 Tắt'}`)
             .setFooter({ text: `Tên kênh legit: ${C.LEGIT_CHANNEL_PREFIX}<số>` });
         await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     }

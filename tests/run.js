@@ -672,7 +672,7 @@ const msgFor = (channel, authorId, content, member) => {
         assert.ok(!staff.includes('/owner'));
         const owner = buildHelpEmbed(makeMember(OWNER)).toJSON();
         const ownerText = JSON.stringify(owner);
-        for (const c of ['/owner', '/staff', '/config', 'check_emoji', '/set_kenhsold']) assert.ok(ownerText.includes(c), c);
+        for (const c of ['/owner', '/staff', '/config', 'check_emoji', '/set_kenhsold', 'legit_dem']) assert.ok(ownerText.includes(c), c);
         for (const f of owner.fields) assert.ok(f.value.length <= 1024, f.name);
     });
     await test('loadConfig nạp lại cấu hình + staff từ DB sau khi khởi động lại', async () => {
@@ -825,6 +825,59 @@ const msgFor = (channel, authorId, content, member) => {
         const guestDel = mkIt('xoakenh', makeMember('800000000000000001'), { id: makeChannel('khong-xoa').id });
         await index.handleInteraction(guestDel);
         assert.ok(JSON.stringify(guestDel.replies).includes('Staff'));
+    });
+
+
+    console.log('\n[Y] Bật / tắt đếm legit theo server');
+    await test('/config legit_dem: tắt -> vẫn đếm + react nhưng không đổi tên kênh; bật lại -> đổi tên lại; lưu theo ID server và nạp lại sau khi khởi động', async () => {
+        legitUtil.resetLegitRenameState();
+        const legitCh = registry.get(LEGIT_CH);
+        const cfgIt = (value, userId = OWNER) => {
+            const it = { commandName: 'config', user: { id: userId }, member: makeMember(userId), guild, guildId: guild.id, channel: legitCh, channelId: legitCh.id,
+                replies: [], isChatInputCommand: () => true, isModalSubmit: () => false, isButton: () => false,
+                options: { getSubcommand: () => 'legit_dem', getString: () => value },
+                async reply(x) { it.replies.push(x); } };
+            return it;
+        };
+        const countBefore = await db.getSetting('LEGIT_COUNT');
+
+        const off = cfgIt('off');
+        await index.handleInteraction(off);
+        assert.ok(JSON.stringify(off.replies).includes('TẮT'));
+        assert.equal(await db.getSetting('LEGIT_ENABLED_' + guild.id), false);
+        assert.equal(runtime.isLegitEnabled(guild.id), false);
+        assert.equal(runtime.isLegitEnabled('SERVER_KHAC'), true, 'server khác không bị ảnh hưởng');
+
+        const nameBefore = legitCh.name, renamedBefore = legitCh.renamed.length;
+        const m1 = msgFor(legitCh, '800000000000000201', `+1 legit <@${SELLER}> mfa`);
+        await index.handleMessage(m1);
+        assert.equal(m1.reacts.length, 3, 'tắt vẫn react emoji');
+        assert.equal(await db.getSetting('LEGIT_COUNT'), countBefore + 1, 'tắt vẫn đếm');
+        assert.equal(legitCh.renamed.length, renamedBefore, 'tắt thì không đổi tên kênh');
+        assert.equal(legitCh.name, nameBefore);
+
+        // khởi động lại bot: cấu hình vẫn tắt
+        const { loadConfig } = require(path.join(root, 'utils/config'));
+        await loadConfig();
+        assert.equal(runtime.isLegitEnabled(guild.id), false);
+
+        const on = cfgIt('on');
+        await index.handleInteraction(on);
+        assert.ok(JSON.stringify(on.replies).includes('BẬT'));
+        const m2 = msgFor(legitCh, '800000000000000202', `+1 legit <@${SELLER}> mfa`);
+        await index.handleMessage(m2);
+        assert.equal(m2.reacts.length, 3);
+        assert.equal(await db.getSetting('LEGIT_COUNT'), countBefore + 2);
+        assert.equal(legitCh.renamed.length, renamedBefore + 1, 'bật lại thì đổi tên kênh theo số mới nhất');
+    });
+    await test('/config legit_dem: chỉ Owner dùng được (Staff bị từ chối, trạng thái không đổi)', async () => {
+        const it = { commandName: 'config', user: { id: SELLER }, member: staffMember(), guild, guildId: guild.id, channel: registry.get(LEGIT_CH), channelId: LEGIT_CH,
+            replies: [], isChatInputCommand: () => true, isModalSubmit: () => false, isButton: () => false,
+            options: { getSubcommand: () => 'legit_dem', getString: () => 'off' },
+            async reply(x) { it.replies.push(x); } };
+        await index.handleInteraction(it);
+        assert.ok(JSON.stringify(it.replies).includes('Owner'));
+        assert.equal(runtime.isLegitEnabled(guild.id), true);
     });
 
     const failed = results.filter(r => !r[0]).length;

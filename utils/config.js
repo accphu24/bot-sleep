@@ -16,6 +16,8 @@ const CONFIG_KEYS = [
     { value: 'KENH_LOCK', name: 'Kênh hướng dẫn lock' }
 ];
 
+const LEGIT_ENABLED_PREFIX = 'LEGIT_ENABLED_';
+
 async function loadConfig() {
     runtime.clearOverrides();
     // tương thích bản cũ: /set_kenhsold từng lưu thẳng khóa SOLD_CATEGORY_ID
@@ -29,6 +31,17 @@ async function loadConfig() {
     runtime.setExtraStaff(Array.isArray(staff) ? staff : []);
     const owners = await db.getSetting('OWNER_USERS', []);
     runtime.setExtraOwners(Array.isArray(owners) ? owners : []);
+
+    runtime.clearLegitEnabled();
+    for (const s of await db.getSettingsWithPrefix(LEGIT_ENABLED_PREFIX)) {
+        runtime.setLegitEnabled(s._id.slice(LEGIT_ENABLED_PREFIX.length), s.value !== false);
+    }
+}
+
+// Bật / tắt đếm legit cho MỘT server (lưu theo ID server trong MongoDB)
+async function setLegitEnabled(guildId, enabled) {
+    await db.saveSetting(`${LEGIT_ENABLED_PREFIX}${guildId}`, Boolean(enabled));
+    runtime.setLegitEnabled(guildId, enabled);
 }
 
 async function setConfig(name, value) {
@@ -71,4 +84,4 @@ async function removeOwnerUser(userId) {
     return had;
 }
 
-module.exports = { addOwnerUser, removeOwnerUser, CONFIG_KEYS, loadConfig, setConfig, addStaffUser, removeStaffUser };
+module.exports = { setLegitEnabled, addOwnerUser, removeOwnerUser, CONFIG_KEYS, loadConfig, setConfig, addStaffUser, removeStaffUser };

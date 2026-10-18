@@ -31,7 +31,7 @@ const { sendTranscript } = require('./utils/transcript');
 const { stickyCache } = require('./utils/cache');
 const { buildHelpEmbed } = require('./utils/help');
 const { buildLeaderboardPayload, refreshLeaderboardMessage } = require('./commands/leaderboard');
-const { cfg, getExtraStaff, getExtraOwners } = require('./utils/runtime');
+const { cfg, getExtraStaff, getExtraOwners, isLegitEnabled } = require('./utils/runtime');
 const { loadConfig } = require('./utils/config');
 const { scheduleLegitRename } = require('./utils/legit');
 const { buildCategoryPicker, isCategoryPicker, handleCategoryPick, deleteChannel, parseChannelId } = require('./utils/channelManager');
@@ -926,8 +926,8 @@ function onLegitCooldown(userId) {
     return false;
 }
 
-// Đếm legit: +1 vào bộ đếm, thả 3 emoji vào tin legit, rồi đổi tên kênh thành 『✅』𝙇𝙀𝙂𝙄𝙏-<số>
-async function reactLegit(message) {
+// Đếm legit: +1 vào bộ đếm, thả 3 emoji vào tin legit, rồi (nếu rename) đổi tên kênh thành 『✅』𝙇𝙀𝙂𝙄𝙏-<số>
+async function reactLegit(message, { rename = true } = {}) {
     const number = await db.nextLegitNumber(C.LEGIT_START);
 
     for (const [i, emoji] of C.LEGIT_REACTIONS.entries()) {
@@ -942,7 +942,7 @@ async function reactLegit(message) {
         await new Promise(r => setTimeout(r, 200));
     }
 
-    scheduleLegitRename(message.channel, number);
+    if (rename) scheduleLegitRename(message.channel, number);   // tắt ở /config legit_dem thì không đụng tên kênh
 }
 
 // Staff/Owner gõ "sold" trong kênh bán hàng. Trả về true nếu đã xử lý.
@@ -1015,7 +1015,7 @@ async function handleMessage(message) {
         const legitChannelId = cfg('AUTOREACTER_VOUCH');
         if (legitChannelId && message.channel.id === legitChannelId && C.LEGIT_PATTERN.test(message.content)) {
             await db.clearRemindersForBuyer(message.author.id);   // khách đã vouch thì ngừng nhắc
-            if (!onLegitCooldown(message.author.id)) await reactLegit(message);
+            if (!onLegitCooldown(message.author.id)) await reactLegit(message, { rename: isLegitEnabled(message.guild.id) });
         }
 
         // 3. Lệnh tin nhắn "sold"

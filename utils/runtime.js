@@ -3,6 +3,8 @@
 const overrides = new Map();
 const extraStaff = new Set();
 const extraOwners = new Set();
+// Bật / tắt đếm legit theo ID server. Mặc định (chưa đặt) = BẬT.
+const legitEnabled = new Map();
 
 function cfg(name) {
     const o = overrides.get(name);
@@ -39,4 +41,8 @@ const setExtraStaff = (ids) => {
     for (const id of ids || []) extraStaff.add(String(id));
 };
 
-module.exports = { cfg, cfgSource, setOverride, clearOverrides, getExtraOwners, isExtraOwner, setExtraOwners, getExtraStaff, isExtraStaff, setExtraStaff };
+const isLegitEnabled = (guildId) => legitEnabled.get(String(guildId)) !== false;
+const setLegitEnabled = (guildId, enabled) => { legitEnabled.set(String(guildId), Boolean(enabled)); };
+const clearLegitEnabled = () => legitEnabled.clear();
+
+module.exports = { isLegitEnabled, setLegitEnabled, clearLegitEnabled, cfg, cfgSource, setOverride, clearOverrides, getExtraOwners, isExtraOwner, setExtraOwners, getExtraStaff, isExtraStaff, setExtraStaff };
