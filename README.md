@@ -41,7 +41,7 @@ Nếu thiếu emoji: chạy `/config check_emoji` để biết emoji nào bot kh
 | `.av [@user \| id]` | mọi người | xem avatar |
 | `.vietqr <số tiền> [ghi chú]` | Staff/Owner | tạo mã VietQR nhanh |
 | `sold` (không có dấu chấm) | Staff/Owner (người tạo acc hoặc Owner) | đánh dấu kênh bán hàng đã bán ngoài hệ thống |
-| `.taokenh <tên>` (hoặc `taokenh <tên>`) | Staff/Owner | tạo kênh mới `✅・tên`, cùng danh mục với kênh đang gõ |
+| `.taokenh <tên>` (hoặc `taokenh <tên>`) | Staff/Owner | tạo kênh mới `✅・tên`; bot hiện menu để chọn danh mục |
 | `.xoakenh #kênh \| <id>` (hoặc `xoakenh ...`) | Staff/Owner | xóa kênh (chặn kênh hệ thống trong `/config` và card còn hàng / đang có đơn) |
 | `.close` | Staff/Owner, trong ticket | đóng ticket |
 | `.resend` | Staff/Owner/seller, trong ticket | gửi lại thông tin đăng nhập qua DM |

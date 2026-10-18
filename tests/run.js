@@ -689,23 +689,60 @@ const msgFor = (channel, authorId, content, member) => {
 
 
     console.log('\n[X] Tạo / xóa kênh');
-    await test('.taokenh: Staff tạo kênh, tên được chuẩn hóa + thêm ✅ đầu tên (slash thì không), cùng danh mục với kênh gõ lệnh', async () => {
+    const { ChannelType: CT } = require('discord.js');
+    const pickerId = (m) => m.replies[0].components[0].components[0].data.custom_id;
+    const pickIt = (customId, member, values) => {
+        const it = { customId, values, user: { id: member.id }, member, guild, replies: [], edits: [],
+            isChatInputCommand: () => false, isModalSubmit: () => false, isButton: () => false, isStringSelectMenu: () => true,
+            async reply(x) { it.replies.push(x); }, async update(x) { it.edits.push(x); } };
+        return it;
+    };
+    const CAT_A = '650000000000000001';
+    const catA = makeChannel('Danh mục A', { id: CAT_A }); catA.type = CT.GuildCategory; guild.channels.cache.set(CAT_A, catA);
+
+    await test('.taokenh: bot gửi menu chọn danh mục, chọn xong mới tạo kênh ✅・tên (đúng danh mục đã chọn)', async () => {
         const here = makeChannel('chat', { parentId: '600000000000000001' });
         const before = guild.channels.created.length;
         const m = msgFor(here, SELLER, '.taokenh Kênh Mới 123', staffMember());
         await index.handleMessage(m);
+        assert.equal(guild.channels.created.length, before, 'chưa được tạo trước khi chọn');
+        const menu = m.replies[0].components[0].components[0].toJSON();
+        assert.ok(menu.options.some(o => o.value === CAT_A) && menu.options.some(o => o.value === '__none__'));
+        const pick = pickIt(pickerId(m), staffMember(), [CAT_A]);
+        pick.user.id = SELLER;
+        await index.handleInteraction(pick);
         assert.equal(guild.channels.created.length, before + 1);
         const { ch, opts } = guild.channels.created[before];
         assert.equal(opts.name, '✅・kênh-mới-123');
-        assert.equal(opts.parent, '600000000000000001');
-        assert.ok(JSON.stringify(m.replies).includes(ch.id));
+        assert.equal(opts.parent, CAT_A);
+        assert.ok(JSON.stringify(pick.edits).includes(ch.id));
     });
-    await test('taokenh (không dấu chấm): Owner dùng được', async () => {
+    await test('taokenh (không dấu chấm): Owner chọn "Không đặt danh mục" -> kênh không có parent', async () => {
         const here = makeChannel('chat2');
         const before = guild.channels.created.length;
-        await index.handleMessage(msgFor(here, OWNER, 'taokenh abc', makeMember(OWNER)));
+        const m = msgFor(here, OWNER, 'taokenh abc', makeMember(OWNER));
+        await index.handleMessage(m);
+        await index.handleInteraction(pickIt(pickerId(m), makeMember(OWNER), ['__none__']));
         assert.equal(guild.channels.created.length, before + 1);
         assert.equal(guild.channels.created[before].opts.name, '✅・abc');
+        assert.equal(guild.channels.created[before].opts.parent, undefined);
+    });
+    await test('menu chọn danh mục: người khác bấm bị từ chối, bấm lại sau khi đã dùng thì báo hết hạn', async () => {
+        const here = makeChannel('chat2b');
+        const before = guild.channels.created.length;
+        const m = msgFor(here, SELLER, '.taokenh xyz', staffMember());
+        await index.handleMessage(m);
+        const other = pickIt(pickerId(m), makeMember('800000000000000001'), [CAT_A]);
+        await index.handleInteraction(other);
+        assert.ok(JSON.stringify(other.replies).includes('không phải của bạn'));
+        assert.equal(guild.channels.created.length, before);
+        const own = pickIt(pickerId(m), staffMember(), [CAT_A]); own.user.id = SELLER;
+        await index.handleInteraction(own);
+        assert.equal(guild.channels.created.length, before + 1);
+        const again = pickIt(pickerId(m), staffMember(), [CAT_A]); again.user.id = SELLER;
+        await index.handleInteraction(again);
+        assert.equal(guild.channels.created.length, before + 1);
+        assert.ok(JSON.stringify(again.edits).includes('hết hạn'));
     });
     await test('taokenh: khách thường không tạo được (có dấu chấm thì báo lỗi, không dấu chấm thì bỏ qua)', async () => {
         const here = makeChannel('chat3');
@@ -777,6 +814,10 @@ const msgFor = (channel, authorId, content, member) => {
         assert.equal(guild.channels.created.length, before + 1);
         assert.equal(guild.channels.created[before].opts.name, 'slash-kenh');
         assert.equal(guild.channels.created[before].opts.parent, '600000000000000002');
+        const withCat = mkIt('taokenh', staffMember(), { ten: 'co danh muc', danhmuc: catA });
+        await index.handleInteraction(withCat);
+        assert.equal(guild.channels.created[before + 1].opts.name, 'co-danh-muc');
+        assert.equal(guild.channels.created[before + 1].opts.parent, CAT_A);
         const target = makeChannel('xoa-slash'); target.guildId = guild.id;
         const del = mkIt('xoakenh', staffMember(), { kenh: target });
         await index.handleInteraction(del);

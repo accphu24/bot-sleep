@@ -13,7 +13,7 @@ module.exports = {
                 .setMaxLength(100))
         .addChannelOption(opt =>
             opt.setName('danhmuc')
-                .setDescription('Danh mục chứa kênh (bỏ trống = cùng danh mục với kênh bạn đang gõ lệnh)')
+                .setDescription('Chọn danh mục chứa kênh (bỏ trống = cùng danh mục với kênh bạn đang gõ lệnh)')
                 .addChannelTypes(ChannelType.GuildCategory)
                 .setRequired(false)),
 

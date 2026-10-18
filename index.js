@@ -34,7 +34,7 @@ const { buildLeaderboardPayload, refreshLeaderboardMessage } = require('./comman
 const { cfg, getExtraStaff, getExtraOwners } = require('./utils/runtime');
 const { loadConfig } = require('./utils/config');
 const { scheduleLegitRename } = require('./utils/legit');
-const { createTextChannel, deleteChannel, parseChannelId } = require('./utils/channelManager');
+const { buildCategoryPicker, isCategoryPicker, handleCategoryPick, deleteChannel, parseChannelId } = require('./utils/channelManager');
 
 const EPHEMERAL = MessageFlags.Ephemeral;
 
@@ -855,6 +855,10 @@ async function handleInteraction(interaction) {
             }
         }
 
+        if (interaction.isStringSelectMenu?.() && isCategoryPicker(interaction.customId)) {
+            return await handleCategoryPick(interaction);
+        }
+
         if (interaction.isButton()) {
             const customId = interaction.customId;
 
@@ -1034,9 +1038,9 @@ async function handleMessage(message) {
                     if (hasDot) return;
                 } else if (cmdName === 'taokenh') {
                     if (!rest) return await message.reply({ content: '⚠️ **Cú pháp:** `.taokenh <tên kênh>`' }).catch(() => null);
-                    const result = await createTextChannel(message.guild, rest, { parentId: message.channel.parentId, prefix: '✅・' });
-                    if (!result.ok) return await message.reply({ content: result.msg }).catch(() => null);
-                    return await message.reply({ content: `✅ Đã tạo kênh <#${result.channel.id}> (\`${result.channel.id}\`).` }).catch(() => null);
+                    const picker = buildCategoryPicker(message.guild, message.author.id, rest, '✅・');
+                    if (!picker.ok) return await message.reply({ content: picker.msg }).catch(() => null);
+                    return await message.reply(picker.payload).catch(() => null);
                 } else {
                     const id = parseChannelId(rest.split(/\s+/)[0]);
                     if (!id) return await message.reply({ content: '⚠️ **Cú pháp:** `.xoakenh #kênh` hoặc `.xoakenh <id kênh>`' }).catch(() => null);
