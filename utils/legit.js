@@ -1,15 +1,21 @@
-// Tên kênh legit: 『✅』𝙇𝙀𝙂𝙄𝙏-<số>. Discord chỉ cho đổi tên 2 lần / 10 phút nên đổi tối đa 1 lần / ~5 phút,
-// luôn lấy số mới nhất tại thời điểm đổi (không bao giờ bỏ sót số cuối).
+// Tên kênh legit: 『✅』𝙇𝙀𝙂𝙄𝙏-<số>. Discord chỉ cho đổi tên 2 lần / 10 phút (tính riêng TỪNG kênh) nên mỗi kênh đổi tối đa
+// 1 lần / ~5 phút, luôn lấy số mới nhất tại thời điểm đổi (không bao giờ bỏ sót số cuối).
 const C = require('./constants');
 
-const state = { last: 0, timer: null, latest: null };
+const states = new Map();   // channelId -> { last, timer, latest }
 
 const legitName = (n) => `${C.LEGIT_CHANNEL_PREFIX}${n}`;
 
-function applyRename(channel) {
-    state.timer = null;
-    state.last = Date.now();
-    const name = legitName(state.latest);
+function stateOf(channel) {
+    let st = states.get(channel.id);
+    if (!st) { st = { last: 0, timer: null, latest: null }; states.set(channel.id, st); }
+    return st;
+}
+
+function applyRename(channel, st) {
+    st.timer = null;
+    st.last = Date.now();
+    const name = legitName(st.latest);
     if (channel.name !== name) {
         return Promise.resolve(channel.setName(name)).catch(err =>
             console.warn('[LEGIT] Không đổi được tên kênh (thiếu quyền Manage Channels?):', err.message));
@@ -18,21 +24,22 @@ function applyRename(channel) {
 
 function scheduleLegitRename(channel, number, { force = false } = {}) {
     if (!channel || typeof channel.setName !== 'function') return;
-    state.latest = number;
+    const st = stateOf(channel);
+    st.latest = number;
     if (force) {
-        if (state.timer) clearTimeout(state.timer);
-        return applyRename(channel);
+        if (st.timer) clearTimeout(st.timer);
+        return applyRename(channel, st);
     }
-    if (state.timer) return;   // đã có lịch đổi tên, sẽ dùng số mới nhất
-    const wait = Math.max(0, state.last + C.LEGIT_RENAME_INTERVAL_MS - Date.now());
-    if (wait === 0) return applyRename(channel);
-    state.timer = setTimeout(() => applyRename(channel), wait);
-    if (state.timer.unref) state.timer.unref();
+    if (st.timer) return;   // đã có lịch đổi tên, sẽ dùng số mới nhất
+    const wait = Math.max(0, st.last + C.LEGIT_RENAME_INTERVAL_MS - Date.now());
+    if (wait === 0) return applyRename(channel, st);
+    st.timer = setTimeout(() => applyRename(channel, st), wait);
+    if (st.timer.unref) st.timer.unref();
 }
 
 function resetLegitRenameState() {
-    if (state.timer) clearTimeout(state.timer);
-    state.timer = null; state.last = 0; state.latest = null;
+    for (const st of states.values()) if (st.timer) clearTimeout(st.timer);
+    states.clear();
 }
 
 module.exports = { legitName, scheduleLegitRename, resetLegitRenameState };

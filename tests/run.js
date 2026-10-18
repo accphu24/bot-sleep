@@ -394,7 +394,7 @@ const msgFor = (channel, authorId, content, member) => {
         assert.equal(c.reacts.length, 3);
         // lần 2 nằm trong khoảng giãn cách đổi tên: chưa đổi ngay (tránh bị Discord giới hạn), nhưng đã nhớ số mới nhất
         assert.equal(legitCh.name, '『✅』𝙇𝙀𝙂𝙄𝙏-633');
-        assert.equal(await db.getSetting('LEGIT_COUNT'), 635, 'bộ đếm tăng đúng +1 mỗi lần');
+        assert.equal(await db.getSetting('LEGIT_COUNT_' + guild.id), 635, 'bộ đếm (riêng theo server) tăng đúng +1 mỗi lần');
         legitUtil.scheduleLegitRename(legitCh, 634, { force: true });
         assert.equal(legitCh.name, '『✅』𝙇𝙀𝙂𝙄𝙏-634');
     });
@@ -416,13 +416,13 @@ const msgFor = (channel, authorId, content, member) => {
     await test('chống spam kênh legit: cùng 1 người gửi liên tiếp chỉ đếm 1 lần', async () => {
         const old = C.LEGIT_COOLDOWN_SEC; C.LEGIT_COOLDOWN_SEC = 60;
         const legitCh = registry.get(LEGIT_CH);
-        const before = await db.getSetting('LEGIT_COUNT');
+        const before = await db.getSetting('LEGIT_COUNT_' + guild.id);
         const m1 = msgFor(legitCh, '800000000000000077', `+1 legit <@${SELLER}> a`);
         const m2 = msgFor(legitCh, '800000000000000077', `+1 legit <@${SELLER}> b`);
         await index.handleMessage(m1); await index.handleMessage(m2);
         C.LEGIT_COOLDOWN_SEC = old;
         assert.equal(m1.reacts.length, 3); assert.equal(m2.reacts.length, 0);
-        assert.equal(await db.getSetting('LEGIT_COUNT'), before + 1);
+        assert.equal(await db.getSetting('LEGIT_COUNT_' + guild.id), before + 1);
     });
     await test('legit xong thì lịch nhắc vouch của khách bị hủy', async () => {
         const buyer = users.get('800000000000000002');
@@ -487,12 +487,112 @@ const msgFor = (channel, authorId, content, member) => {
             async reply(x) { this.replies.push(x); }
         });
         const blocked = mk(ticketCh.id); await done.execute(blocked);
-        assert.ok(JSON.stringify(blocked.replies).includes('đã được Confirm'));
+        assert.ok(JSON.stringify(blocked.replies).includes('đã được ghi'));
         assert.equal((await db.getTopCustomers(50)).find(c => c._id === '800000000000000050'), undefined);
 
         const ok = mk('123123123123123123'); await done.execute(ok);
         const rec = (await db.getTopCustomers(50)).find(c => c._id === '800000000000000050');
         assert.equal(rec.totalSpent, 1500000);
+    });
+    await test('/done cộng được tiền khi ticket đã Confirm nhưng doanh thu chưa ghi (Confirm lỗi giữa chừng), và chỉ cộng 1 lần', async () => {
+        const done = require(path.join(root, 'commands/done'));
+        const buyer = users.get('800000000000000001');
+        const { cardCh, cardMsg } = await seedAccount('done2');
+        await buy('done2', buyer.id, cardCh, cardMsg);
+        const ticketCh = guild.channels.created.at(-1).ch;
+        await index.handleInteraction(buttonInteraction({ customId: 'ticket_confirm_done2', user: { id: SELLER }, member: staffMember(), channel: ticketCh }));
+        await db.updateTicket(ticketCh.id, { revenueRecorded: false });   // giả lập: Confirm đã khóa đơn nhưng chưa ghi được doanh thu
+        const CUST = '800000000000000051';
+        const mk = () => ({
+            member: staffMember(), channelId: ticketCh.id, client, user: { id: SELLER, username: 's', displayAvatarURL: () => null }, replies: [],
+            options: { getUser: () => ({ id: CUST }), getString: () => '200k', getInteger: () => null },
+            async reply(x) { this.replies.push(x); }
+        });
+        const first = mk(); await done.execute(first);
+        assert.equal((await db.getTopCustomers(50)).find(c => c._id === CUST).totalSpent, 200000, '/done phải cộng tiền');
+        const second = mk(); await done.execute(second);
+        assert.ok(JSON.stringify(second.replies).includes('đã được ghi'));
+        assert.equal((await db.getTopCustomers(50)).find(c => c._id === CUST).totalSpent, 200000, 'không cộng trùng');
+    });
+    await test('/done trong ticket CHƯA Confirm: ghi doanh thu và Confirm sau đó không cộng trùng', async () => {
+        const done = require(path.join(root, 'commands/done'));
+        const buyer = users.get('800000000000000002');
+        const { cardCh, cardMsg } = await seedAccount('done3');
+        await buy('done3', buyer.id, cardCh, cardMsg);
+        const ticketCh = guild.channels.created.at(-1).ch;
+        const CUST = '800000000000000052';
+        const it = { member: staffMember(), channelId: ticketCh.id, client, user: { id: SELLER, username: 's', displayAvatarURL: () => null }, replies: [],
+            options: { getUser: () => ({ id: CUST }), getString: () => '300k', getInteger: () => null }, async reply(x) { this.replies.push(x); } };
+        await done.execute(it);
+        assert.equal((await db.getTopCustomers(50)).find(c => c._id === CUST).totalSpent, 300000);
+        const before = (await db.getTopCustomers(50)).find(c => c._id === buyer.id)?.totalSpent || 0;
+        await index.handleInteraction(buttonInteraction({ customId: 'ticket_confirm_done3', user: { id: SELLER }, member: staffMember(), channel: ticketCh }));
+        const after = (await db.getTopCustomers(50)).find(c => c._id === buyer.id)?.totalSpent || 0;
+        assert.equal(after, before, 'Confirm sau /done không cộng thêm lần nữa');
+    });
+    await test('bảng xếp hạng: mỗi lần /done là sửa lại bảng của TẤT CẢ server (mỗi server 1 bảng)', async () => {
+        const done = require(path.join(root, 'commands/done'));
+        const mkBoard = (key) => {
+            const ch = makeChannel('bxh-' + key); ch.guild = guild;
+            const msg = { id: nextId(), edits: [], async edit(p) { msg.edits.push(p); } };
+            ch.messages.fetch = async () => msg;
+            return { ch, msg };
+        };
+        const A = mkBoard('a'), B = mkBoard('b');
+        await db.saveSetting('LEADERBOARD_MESSAGE_SERVER_A', { channelId: A.ch.id, messageId: A.msg.id });
+        await db.saveSetting('LEADERBOARD_MESSAGE_SERVER_B', { channelId: B.ch.id, messageId: B.msg.id });
+        const it = { member: staffMember(), channelId: '123123123123123124', client, user: { id: SELLER, username: 's', displayAvatarURL: () => null }, replies: [],
+            options: { getUser: () => ({ id: '800000000000000053' }), getString: () => '9.9M', getInteger: () => null }, async reply(x) { this.replies.push(x); } };
+        await done.execute(it);
+        assert.equal(A.msg.edits.length, 1); assert.equal(B.msg.edits.length, 1);
+        assert.ok(JSON.stringify(A.msg.edits[0]).includes('800000000000000053'), 'bảng có khách vừa done');
+        // tin bảng bị xóa: bot quên bảng đó, không crash
+        B.ch.messages.fetch = async () => { throw Object.assign(new Error('Unknown Message'), { code: 10008 }); };
+        await done.execute(it);
+        assert.equal(await db.getSetting('LEADERBOARD_MESSAGE_SERVER_B'), null);
+        assert.equal(A.msg.edits.length, 2);
+        await db.saveSetting('LEADERBOARD_MESSAGE_SERVER_A', null);
+    });
+    await test('.done @khách số_tiền [số_đơn]: Staff cộng tiền + sửa bảng xếp hạng; khách thường bị từ chối; sai cú pháp báo hướng dẫn', async () => {
+        const here = makeChannel('chat-done', { id: '123123123123123199' });
+        const CUST = '800000000000000054';
+        const board = makeChannel('bxh-prefix'); board.guild = guild;
+        const bmsg = { id: nextId(), edits: [], async edit(p) { bmsg.edits.push(p); } };
+        board.messages.fetch = async () => bmsg;
+        await db.saveSetting('LEADERBOARD_MESSAGE_PFX', { channelId: board.id, messageId: bmsg.id });
+
+        const m = msgFor(here, SELLER, `.done <@${CUST}> 150k 2`, staffMember());
+        await index.handleMessage(m);
+        const rec = (await db.getTopCustomers(50)).find(c => c._id === CUST);
+        assert.equal(rec.totalSpent, 150000); assert.equal(rec.totalOrders, 2);
+        assert.ok(JSON.stringify(here.sent).includes('GHI NHẬN ĐƠN HÀNG'));
+        assert.equal(bmsg.edits.length, 1, 'bảng xếp hạng được sửa ngay');
+
+        await index.handleMessage(msgFor(here, SELLER, `.done ${CUST} 50k`, staffMember()));   // id trần, mặc định 1 đơn
+        const rec2 = (await db.getTopCustomers(50)).find(c => c._id === CUST);
+        assert.equal(rec2.totalSpent, 200000); assert.equal(rec2.totalOrders, 3);
+
+        const guest = msgFor(here, '800000000000000001', `.done <@${CUST}> 1M`);
+        await index.handleMessage(guest);
+        assert.ok(JSON.stringify(guest.replies).includes('Staff'));
+        for (const bad of ['.done', '.done abc 50k', `.done <@${CUST}>`, `.done <@${CUST}> 50k x`]) {
+            const b = msgFor(here, SELLER, bad, staffMember());
+            await index.handleMessage(b);
+            assert.ok(JSON.stringify(b.replies).includes('Cú pháp'), bad);
+        }
+        assert.equal((await db.getTopCustomers(50)).find(c => c._id === CUST).totalSpent, 200000, 'sai cú pháp không cộng tiền');
+        await db.saveSetting('LEADERBOARD_MESSAGE_PFX', null);
+    });
+    await test('.done trong ticket đã Confirm: bị chặn, không cộng trùng', async () => {
+        const buyer = users.get('800000000000000001');
+        const { cardCh, cardMsg } = await seedAccount('done4');
+        await buy('done4', buyer.id, cardCh, cardMsg);
+        const ticketCh = guild.channels.created.at(-1).ch;
+        await index.handleInteraction(buttonInteraction({ customId: 'ticket_confirm_done4', user: { id: SELLER }, member: staffMember(), channel: ticketCh }));
+        const m = msgFor(ticketCh, SELLER, '.done <@800000000000000055> 100k', staffMember());
+        await index.handleMessage(m);
+        assert.ok(JSON.stringify(m.replies).includes('đã được ghi'));
+        assert.equal((await db.getTopCustomers(50)).find(c => c._id === '800000000000000055'), undefined);
     });
     await test('/sticky đã nằm trong danh sách lệnh chỉ dành cho Staff', async () => {
         const it = { isChatInputCommand: () => true, commandName: 'sticky', member: makeMember('800000000000000001'), replies: [], async reply(x) { this.replies.push(x); } };
@@ -563,7 +663,7 @@ const msgFor = (channel, authorId, content, member) => {
 
     console.log('\n[11] Quản lý Staff và kênh (Owner)');
     const mkCmd = (name, sub, { user = OWNER, opts = {} } = {}) => ({
-        isChatInputCommand: () => true, commandName: name, user: { id: user, bot: false }, member: makeMember(user), client,
+        isChatInputCommand: () => true, commandName: name, user: { id: user, bot: false }, member: makeMember(user), client, guild, guildId: guild.id,
         replies: [], edits: [],
         options: {
             getSubcommand: () => sub,
@@ -616,7 +716,7 @@ const msgFor = (channel, authorId, content, member) => {
         const legitCh = registry.get(LEGIT_CH);
         await index.handleInteraction(mkCmd('config', 'legit_count', { opts: { int: 632 } }));
         assert.equal(legitCh.name, '『✅』𝙇𝙀𝙂𝙄𝙏-632');
-        assert.equal(await db.getSetting('LEGIT_COUNT'), 633);
+        assert.equal(await db.getSetting('LEGIT_COUNT_' + guild.id), 633);
     });
     await test('/owner: chỉ Owner gốc thêm/bớt; Owner phụ có đủ quyền Owner nhưng không tự thêm Owner khác', async () => {
         const { isOwnerId, checkStaffOrOwner } = require(path.join(root, 'utils/permissions'));
@@ -668,7 +768,7 @@ const msgFor = (channel, authorId, content, member) => {
         const guest = text(makeMember('800000000000000001'));
         assert.ok(!guest.includes('.close') && !guest.includes('/staff'));
         const staff = text(staffMember());
-        for (const c of ['.close', '.resend', '.vietqr', 'sold', '/add_acc', '/stock', '/set_qr', '/restock', '/done', '/leaderboard', '/sticky', '/skin', '.taokenh', '.xoakenh', '/taokenh', '/xoakenh']) assert.ok(staff.includes(c), c);
+        for (const c of ['.close', '.resend', '.vietqr', 'sold', '/add_acc', '/stock', '/set_qr', '/restock', '/done', '/leaderboard', '/sticky', '/skin', '.done', '.taokenh', '.xoakenh', '/taokenh', '/xoakenh']) assert.ok(staff.includes(c), c);
         assert.ok(!staff.includes('/owner'));
         const owner = buildHelpEmbed(makeMember(OWNER)).toJSON();
         const ownerText = JSON.stringify(owner);
@@ -828,56 +928,131 @@ const msgFor = (channel, authorId, content, member) => {
     });
 
 
-    console.log('\n[Y] Bật / tắt đếm legit theo server');
-    await test('/config legit_dem: tắt -> vẫn đếm + react nhưng không đổi tên kênh; bật lại -> đổi tên lại; lưu theo ID server và nạp lại sau khi khởi động', async () => {
+    console.log('\n[Y] Legit theo server: bật / tắt đếm, quét lại khi khởi động');
+    const guildB = { id: 'GB', name: 'Shop B', iconURL: () => null, channels: guild.channels };
+    const legitB = makeChannel('legit-b', { id: '700000000000000002' }); legitB.guildId = 'GB'; legitB.guild = guildB;
+    const legitMsg = (g, channel, authorId, content) => { const m = msgFor(channel, authorId, content); m.guild = g; return m; };
+    const cfgIt = (value, g, userId = OWNER) => {
+        const it = { commandName: 'config', user: { id: userId }, member: makeMember(userId), guild: g, guildId: g.id,
+            replies: [], isChatInputCommand: () => true, isModalSubmit: () => false, isButton: () => false,
+            options: { getSubcommand: () => 'legit_dem', getString: () => value },
+            async reply(x) { it.replies.push(x); } };
+        return it;
+    };
+    await test('/config legit_dem: server A tắt -> chỉ react (không đếm, không đổi tên); server B mặc định -> đếm + đổi tên như thường', async () => {
         legitUtil.resetLegitRenameState();
-        const legitCh = registry.get(LEGIT_CH);
-        const cfgIt = (value, userId = OWNER) => {
-            const it = { commandName: 'config', user: { id: userId }, member: makeMember(userId), guild, guildId: guild.id, channel: legitCh, channelId: legitCh.id,
-                replies: [], isChatInputCommand: () => true, isModalSubmit: () => false, isButton: () => false,
-                options: { getSubcommand: () => 'legit_dem', getString: () => value },
-                async reply(x) { it.replies.push(x); } };
-            return it;
-        };
-        const countBefore = await db.getSetting('LEGIT_COUNT');
+        const { setLegitChannel } = require(path.join(root, 'utils/config'));
+        await setLegitChannel('GB', legitB.id);
+        const legitA = registry.get(LEGIT_CH);
+        const countA = await db.getSetting('LEGIT_COUNT_' + guild.id);
 
-        const off = cfgIt('off');
+        const off = cfgIt('off', guild);
         await index.handleInteraction(off);
         assert.ok(JSON.stringify(off.replies).includes('TẮT'));
         assert.equal(await db.getSetting('LEGIT_ENABLED_' + guild.id), false);
         assert.equal(runtime.isLegitEnabled(guild.id), false);
-        assert.equal(runtime.isLegitEnabled('SERVER_KHAC'), true, 'server khác không bị ảnh hưởng');
+        assert.equal(runtime.isLegitEnabled('GB'), true, 'server B không bị ảnh hưởng');
 
-        const nameBefore = legitCh.name, renamedBefore = legitCh.renamed.length;
-        const m1 = msgFor(legitCh, '800000000000000201', `+1 legit <@${SELLER}> mfa`);
-        await index.handleMessage(m1);
-        assert.equal(m1.reacts.length, 3, 'tắt vẫn react emoji');
-        assert.equal(await db.getSetting('LEGIT_COUNT'), countBefore + 1, 'tắt vẫn đếm');
-        assert.equal(legitCh.renamed.length, renamedBefore, 'tắt thì không đổi tên kênh');
-        assert.equal(legitCh.name, nameBefore);
+        const nameA = legitA.name, renA = legitA.renamed.length;
+        const mA = legitMsg(guild, legitA, '800000000000000201', `+1 legit <@${SELLER}> mfa`);
+        await index.handleMessage(mA);
+        assert.equal(mA.reacts.length, 3, 'server tắt vẫn react emoji');
+        assert.equal(await db.getSetting('LEGIT_COUNT_' + guild.id), countA, 'server tắt không đếm số');
+        assert.equal(legitA.renamed.length, renA); assert.equal(legitA.name, nameA, 'server tắt không đụng tên kênh');
 
-        // khởi động lại bot: cấu hình vẫn tắt
+        const mB = legitMsg(guildB, legitB, '800000000000000202', `+1 legit <@${SELLER}> mfa`);
+        await index.handleMessage(mB);
+        assert.equal(mB.reacts.length, 3);
+        assert.equal(await db.getSetting('LEGIT_COUNT_GB'), 634, 'server B đếm riêng, bắt đầu từ 633');
+        assert.equal(legitB.name, '『✅』𝙇𝙀𝙂𝙄𝙏-633');
+        assert.equal(await db.getSetting('LEGIT_COUNT_' + guild.id), countA, 'số của server B không lẫn sang server A');
+    });
+    await test('legit_dem lưu theo ID server: khởi động lại vẫn giữ; bật lại thì đếm và đổi tên lại', async () => {
+        const legitA = registry.get(LEGIT_CH);
         const { loadConfig } = require(path.join(root, 'utils/config'));
         await loadConfig();
         assert.equal(runtime.isLegitEnabled(guild.id), false);
+        assert.equal(runtime.isLegitEnabled('GB'), true);
+        assert.equal(runtime.legitChannelFor('GB'), legitB.id, 'kênh legit theo server cũng được nạp lại');
 
-        const on = cfgIt('on');
+        const on = cfgIt('on', guild);
         await index.handleInteraction(on);
         assert.ok(JSON.stringify(on.replies).includes('BẬT'));
-        const m2 = msgFor(legitCh, '800000000000000202', `+1 legit <@${SELLER}> mfa`);
-        await index.handleMessage(m2);
-        assert.equal(m2.reacts.length, 3);
-        assert.equal(await db.getSetting('LEGIT_COUNT'), countBefore + 2);
-        assert.equal(legitCh.renamed.length, renamedBefore + 1, 'bật lại thì đổi tên kênh theo số mới nhất');
+        const countA = await db.getSetting('LEGIT_COUNT_' + guild.id);
+        const renA = legitA.renamed.length;
+        legitUtil.resetLegitRenameState();
+        const mA = legitMsg(guild, legitA, '800000000000000203', `+1 legit <@${SELLER}> mfa`);
+        await index.handleMessage(mA);
+        assert.equal(mA.reacts.length, 3);
+        assert.equal(await db.getSetting('LEGIT_COUNT_' + guild.id), countA + 1);
+        assert.equal(legitA.renamed.length, renA + 1);
     });
     await test('/config legit_dem: chỉ Owner dùng được (Staff bị từ chối, trạng thái không đổi)', async () => {
-        const it = { commandName: 'config', user: { id: SELLER }, member: staffMember(), guild, guildId: guild.id, channel: registry.get(LEGIT_CH), channelId: LEGIT_CH,
-            replies: [], isChatInputCommand: () => true, isModalSubmit: () => false, isButton: () => false,
-            options: { getSubcommand: () => 'legit_dem', getString: () => 'off' },
-            async reply(x) { it.replies.push(x); } };
+        const it = cfgIt('off', guild, SELLER); it.member = staffMember();
         await index.handleInteraction(it);
         assert.ok(JSON.stringify(it.replies).includes('Owner'));
         assert.equal(runtime.isLegitEnabled(guild.id), true);
+    });
+    await test('khởi động: quét lại kênh legit, react tin chưa react (cũ -> mới), bỏ qua tin đã react / sai mẫu / của bot', async () => {
+        legitUtil.resetLegitRenameState();
+        const { Collection: Col } = require('discord.js');
+        const SCAN_ID = '710000000000000001';
+        const gS = { id: 'S1', name: 'Shop S1' };
+        const ch = makeChannel('legit-scan', { id: SCAN_ID }); ch.guildId = 'S1'; ch.guild = gS;
+        const mkMsg = (ts, content, { reacted = false, bot = false } = {}) => {
+            const m = { id: nextId(), createdTimestamp: ts, content, author: { id: '8100000000000000' + String(ts).padStart(2, '0'), bot }, guild: gS, channel: ch, reacts: [],
+                reactions: { cache: reacted ? new Col([['x', { me: true }]]) : new Col() }, async react(e) { m.reacts.push(e); } };
+            return m;
+        };
+        const m1 = mkMsg(10, `+1 legit <@${SELLER}> a`), m2 = mkMsg(20, `+1 legit <@${SELLER}> b`, { reacted: true });
+        const m3 = mkMsg(30, `+1 legit <@${SELLER}> c`), m4 = mkMsg(40, 'chào shop'), m5 = mkMsg(50, `+1 legit <@${SELLER}> d`, { bot: true });
+        ch.messages.fetch = async () => new Col([m3, m4, m1, m5, m2].map(m => [m.id, m]));   // thứ tự lộn xộn
+        runtime.setLegitChannel('S1', SCAN_ID);
+
+        const log = console.log; console.log = () => {};
+        await index.scanLegitChannels();
+        console.log = log;
+        assert.equal(m1.reacts.length, 3); assert.equal(m3.reacts.length, 3);
+        for (const m of [m2, m4, m5]) assert.equal(m.reacts.length, 0);
+        assert.equal(await db.getSetting('LEGIT_COUNT_S1'), 635, 'm1=633, m3=634 (đúng thứ tự cũ -> mới)');
+        assert.equal(ch.name, '『✅』𝙇𝙀𝙂𝙄𝙏-634', 'server bật đếm: đổi tên kênh theo số cuối');
+
+        // quét lần nữa trong cùng tiến trình: không react / đếm trùng
+        console.log = () => {}; await index.scanLegitChannels(); console.log = log;
+        assert.equal(m1.reacts.length, 3); assert.equal(await db.getSetting('LEGIT_COUNT_S1'), 635);
+    });
+    await test('khởi động: server TẮT đếm vẫn react emoji nhưng không đếm số, không đổi tên kênh', async () => {
+        const { Collection: Col } = require('discord.js');
+        const SCAN_ID = '710000000000000002';
+        const gS = { id: 'S2', name: 'Shop S2' };
+        const ch = makeChannel('legit-scan-off', { id: SCAN_ID }); ch.guildId = 'S2'; ch.guild = gS;
+        const m = { id: nextId(), createdTimestamp: 5, content: `+1 legit <@${SELLER}> x`, author: { id: '800000000000000099', bot: false }, guild: gS, channel: ch, reacts: [],
+            reactions: { cache: new Col() }, async react(e) { m.reacts.push(e); } };
+        ch.messages.fetch = async () => new Col([[m.id, m]]);
+        runtime.setLegitChannel('S2', SCAN_ID);
+        runtime.setLegitEnabled('S2', false);
+        const log = console.log; console.log = () => {};
+        await index.scanLegitChannels();
+        console.log = log;
+        assert.equal(m.reacts.length, 3);
+        assert.equal(await db.getSetting('LEGIT_COUNT_S2'), null, 'không đếm số');
+        assert.equal(ch.renamed.length, 0, 'không đổi tên kênh');
+    });
+    await test('khởi động: kênh legit đặt bằng biến môi trường được gắn vào đúng server (để đặt kênh server khác không làm mất)', async () => {
+        const legitA = registry.get(LEGIT_CH); legitA.guildId = guild.id;
+        runtime.clearLegitChannels();
+        const log = console.log; console.log = () => {};
+        await index.scanLegitChannels();
+        console.log = log;
+        assert.equal(runtime.getLegitChannelMap().get(guild.id), LEGIT_CH);
+        assert.equal(await db.getSetting('LEGIT_CH_' + guild.id), LEGIT_CH);
+    });
+    await test('đếm legit: bộ đếm cũ dùng chung (LEGIT_COUNT) được chuyển cho server đầu tiên đếm, rồi xóa khóa cũ', async () => {
+        await db.saveSetting('LEGIT_COUNT', 900);
+        assert.equal(await db.nextLegitNumber(633, 'GNEW1'), 900);
+        assert.equal(await db.getSetting('LEGIT_COUNT'), null);
+        assert.equal(await db.nextLegitNumber(633, 'GNEW1'), 901);
+        assert.equal(await db.nextLegitNumber(633, 'GNEW2'), 633, 'server thứ hai bắt đầu từ LEGIT_START');
     });
 
     const failed = results.filter(r => !r[0]).length;

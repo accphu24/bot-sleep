@@ -17,6 +17,7 @@ const CONFIG_KEYS = [
 ];
 
 const LEGIT_ENABLED_PREFIX = 'LEGIT_ENABLED_';
+const LEGIT_CHANNEL_PREFIX = 'LEGIT_CH_';
 
 async function loadConfig() {
     runtime.clearOverrides();
@@ -36,6 +37,17 @@ async function loadConfig() {
     for (const s of await db.getSettingsWithPrefix(LEGIT_ENABLED_PREFIX)) {
         runtime.setLegitEnabled(s._id.slice(LEGIT_ENABLED_PREFIX.length), s.value !== false);
     }
+
+    runtime.clearLegitChannels();
+    for (const s of await db.getSettingsWithPrefix(LEGIT_CHANNEL_PREFIX)) {
+        runtime.setLegitChannel(s._id.slice(LEGIT_CHANNEL_PREFIX.length), s.value);
+    }
+}
+
+// Lưu kênh legit của MỘT server (channelId = null để xóa)
+async function setLegitChannel(guildId, channelId) {
+    await db.saveSetting(`${LEGIT_CHANNEL_PREFIX}${guildId}`, channelId || null);
+    runtime.setLegitChannel(guildId, channelId);
 }
 
 // Bật / tắt đếm legit cho MỘT server (lưu theo ID server trong MongoDB)
@@ -84,4 +96,4 @@ async function removeOwnerUser(userId) {
     return had;
 }
 
-module.exports = { setLegitEnabled, addOwnerUser, removeOwnerUser, CONFIG_KEYS, loadConfig, setConfig, addStaffUser, removeStaffUser };
+module.exports = { setLegitChannel, setLegitEnabled, addOwnerUser, removeOwnerUser, CONFIG_KEYS, loadConfig, setConfig, addStaffUser, removeStaffUser };

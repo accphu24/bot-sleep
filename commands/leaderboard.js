@@ -53,18 +53,29 @@ async function buildLeaderboardPayload(guild) {
     return { embeds: [embed], components: [refreshRow()] };
 }
 
-// Tự sửa tin nhắn bảng xếp hạng gần nhất (đã đăng bằng /leaderboard) mỗi khi có đơn mới
+// Tự sửa TẤT CẢ tin nhắn bảng xếp hạng (mỗi server 1 tin, đăng bằng /leaderboard) mỗi khi có đơn mới.
+// Trả về true nếu cập nhật được ít nhất 1 bảng.
+const LB_PREFIX = 'LEADERBOARD_MESSAGE';
 async function refreshLeaderboardMessage(client) {
-    const ref = await db.getSetting('LEADERBOARD_MESSAGE');
-    if (!ref || !ref.channelId || !ref.messageId) return false;
-    try {
-        const channel = await client.channels.fetch(ref.channelId);
-        const message = await channel.messages.fetch(ref.messageId);
-        await message.edit(await buildLeaderboardPayload(channel.guild));
-        return true;
-    } catch {
-        return false;   // tin nhắn đã bị xóa hoặc không còn quyền: bỏ qua
+    const refs = await db.getSettingsWithPrefix(LB_PREFIX);   // gồm khóa cũ LEADERBOARD_MESSAGE và LEADERBOARD_MESSAGE_<serverId>
+    const seen = new Set();
+    let updated = false;
+    for (const doc of refs) {
+        const ref = doc.value;
+        if (!ref || !ref.channelId || !ref.messageId || seen.has(ref.messageId)) continue;
+        seen.add(ref.messageId);
+        try {
+            const channel = await client.channels.fetch(ref.channelId);
+            const message = await channel.messages.fetch(ref.messageId);
+            await message.edit(await buildLeaderboardPayload(channel.guild));
+            updated = true;
+        } catch (err) {
+            // Tin nhắn / kênh đã bị xóa: quên bảng này. Lỗi tạm thời (mạng, rate limit...): giữ lại để lần sau thử tiếp.
+            if (err && (err.code === 10008 || err.code === 10003)) await db.saveSetting(doc._id, null).catch(() => null);
+            else console.warn(`[LEADERBOARD] Không sửa được bảng ${ref.messageId}:`, err?.message);
+        }
     }
+    return updated;
 }
 
 module.exports = {
@@ -78,7 +89,7 @@ module.exports = {
     async execute(interaction) {
         await interaction.deferReply();
         const message = await interaction.editReply(await buildLeaderboardPayload(interaction.guild));
-        // Nhớ tin nhắn này để tự cập nhật về sau
-        await db.saveSetting('LEADERBOARD_MESSAGE', { channelId: message.channelId, messageId: message.id });
+        // Nhớ tin nhắn này (theo server) để tự cập nhật về sau
+        await db.saveSetting(`${LB_PREFIX}_${interaction.guildId}`, { channelId: message.channelId, messageId: message.id });
     }
 };

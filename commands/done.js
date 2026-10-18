@@ -4,7 +4,51 @@ const { parseAmount, formatVND } = require('../utils/money');
 const { checkStaffOrOwner } = require('../utils/permissions');
 const { refreshLeaderboardMessage } = require('./leaderboard');
 
+// Logic dùng chung cho `.done` (prefix) và `/done` (slash). Trả về { ok:false, msg } hoặc { ok:true, embed }.
+// Sau khi gửi embed, người gọi nên gọi refreshLeaderboardMessage(client) để bảng xếp hạng cập nhật ngay.
+async function processDone({ channelId, customerId, amountText, orders = 1, user }) {
+    const amount = parseAmount(amountText);
+    if (amount <= 0) return { ok: false, msg: '❌ Số tiền không hợp lệ! Vui lòng nhập số tiền lớn hơn 0.' };
+    const ordersCount = Number.isInteger(orders) && orders >= 1 ? orders : 1;
+
+    // Chống cộng trùng: mỗi ticket chỉ được ghi doanh thu ĐÚNG 1 lần (dùng chung cờ với nút Confirm).
+    // Ticket đã Confirm nhưng doanh thu CHƯA ghi (Confirm bị lỗi giữa chừng, hoặc đơn 0đ) thì vẫn cộng được.
+    const ticket = await db.getTicket(channelId);
+    let claimed = false;
+    if (ticket) {
+        claimed = Boolean(await db.markTicketRevenue(ticket._id));
+        if (!claimed) {
+            return { ok: false, msg: '⚠️ Doanh thu của đơn trong ticket này **đã được ghi rồi** (Confirm hoặc `.done` trước đó), không cần dùng `.done` nữa!' };
+        }
+    }
+
+    let updated;
+    try {
+        updated = await db.recordCustomerPurchase(customerId, amount, ordersCount);
+    } catch (err) {
+        if (claimed) await db.updateTicket(ticket._id, { revenueRecorded: false }).catch(() => null);   // cho phép thử lại
+        console.error('[LỖI DONE]:', err);
+        return { ok: false, msg: `❌ Không ghi được doanh thu: ${err.message}. Hãy thử lại.` };
+    }
+
+    const embed = new EmbedBuilder()
+        .setTitle('✅ GHI NHẬN ĐƠN HÀNG THÀNH CÔNG')
+        .setColor('#00FFAA')
+        .setDescription(
+            `👤 **Khách hàng:** <@${customerId}>\n` +
+            `💰 **Số tiền vừa nạp:** \`${formatVND(amount)}\`\n` +
+            `📦 **Số đơn cộng thêm:** \`${ordersCount} đơn\`\n\n` +
+            `**Tổng tích lũy của khách:**\n` +
+            `> 💵 Tổng chi tiêu: **${formatVND(updated.totalSpent)}**\n` +
+            `> 🛒 Tổng số đơn: **${updated.totalOrders} đơn**`
+        )
+        .setFooter({ text: `Xác nhận bởi ${user.username}`, iconURL: user.displayAvatarURL?.() || undefined })
+        .setTimestamp();
+    return { ok: true, embed };
+}
+
 module.exports = {
+    processDone,
     data: new SlashCommandBuilder()
         .setName('done')
         .setDescription('Ghi nhận giao dịch thành công cho khách hàng')
@@ -19,6 +63,7 @@ module.exports = {
         .addIntegerOption(opt =>
             opt.setName('orders')
                 .setDescription('Số đơn hàng thành công (mặc định là 1 nếu để trống)')
+                .setMinValue(1)
                 .setRequired(false)),
 
     async execute(interaction) {
@@ -29,43 +74,17 @@ module.exports = {
             });
         }
 
-        const customer = interaction.options.getUser('customer');
-        const ordersCount = interaction.options.getInteger('orders') || 1;
-        const amount = parseAmount(interaction.options.getString('amount'));
+        const result = await processDone({
+            channelId: interaction.channelId,
+            customerId: interaction.options.getUser('customer').id,
+            amountText: interaction.options.getString('amount'),
+            orders: interaction.options.getInteger('orders') || 1,
+            user: interaction.user
+        });
+        if (!result.ok) return await interaction.reply({ content: result.msg, flags: MessageFlags.Ephemeral });
 
-        if (amount <= 0) {
-            return await interaction.reply({
-                content: '❌ Số tiền không hợp lệ! Vui lòng nhập số tiền lớn hơn 0.',
-                flags: MessageFlags.Ephemeral
-            });
-        }
-
-        // Chống cộng trùng: đơn trong ticket này đã được bấm Confirm (doanh thu đã ghi tự động)
-        const ticket = await db.getTicket(interaction.channelId);
-        if (ticket?.confirmed) {
-            return await interaction.reply({
-                content: '⚠️ Đơn trong ticket này **đã được Confirm** và doanh thu đã được ghi tự động, không cần dùng `/done` nữa!',
-                flags: MessageFlags.Ephemeral
-            });
-        }
-
-        const updated = await db.recordCustomerPurchase(customer.id, amount, ordersCount);
-        refreshLeaderboardMessage(interaction.client).catch(() => null);
-
-        const embed = new EmbedBuilder()
-            .setTitle('✅ GHI NHẬN ĐƠN HÀNG THÀNH CÔNG')
-            .setColor('#00FFAA')
-            .setDescription(
-                `👤 **Khách hàng:** <@${customer.id}>\n` +
-                `💰 **Số tiền vừa nạp:** \`${formatVND(amount)}\`\n` +
-                `📦 **Số đơn cộng thêm:** \`${ordersCount} đơn\`\n\n` +
-                `**Tổng tích lũy của khách:**\n` +
-                `> 💵 Tổng chi tiêu: **${formatVND(updated.totalSpent)}**\n` +
-                `> 🛒 Tổng số đơn: **${updated.totalOrders} đơn**`
-            )
-            .setFooter({ text: `Xác nhận bởi ${interaction.user.username}`, iconURL: interaction.user.displayAvatarURL() || undefined })
-            .setTimestamp();
-
-        await interaction.reply({ embeds: [embed] });
+        await interaction.reply({ embeds: [result.embed] });
+        // Mỗi lần done 1 đơn là bảng xếp hạng được sửa lại ngay
+        await refreshLeaderboardMessage(interaction.client).catch(err => console.warn('[LEADERBOARD] Không cập nhật được:', err.message));
     }
 };

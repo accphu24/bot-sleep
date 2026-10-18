@@ -41,6 +41,7 @@ Nếu thiếu emoji: chạy `/config check_emoji` để biết emoji nào bot kh
 | `.av [@user \| id]` | mọi người | xem avatar |
 | `.vietqr <số tiền> [ghi chú]` | Staff/Owner | tạo mã VietQR nhanh |
 | `sold` (không có dấu chấm) | Staff/Owner (người tạo acc hoặc Owner) | đánh dấu kênh bán hàng đã bán ngoài hệ thống |
+| `.done <@khách \| id> <số tiền> [số đơn]` | Staff/Owner | ghi doanh thu cho khách, cập nhật bảng xếp hạng (chống cộng trùng trong ticket) |
 | `.taokenh <tên>` (hoặc `taokenh <tên>`) | Staff/Owner | tạo kênh mới `✅・tên`; bot hiện menu để chọn danh mục |
 | `.xoakenh #kênh \| <id>` (hoặc `xoakenh ...`) | Staff/Owner | xóa kênh (chặn kênh hệ thống trong `/config` và card còn hàng / đang có đơn) |
 | `.close` | Staff/Owner, trong ticket | đóng ticket |
@@ -61,7 +62,10 @@ Nếu thiếu emoji: chạy `/config check_emoji` để biết emoji nào bot kh
 - `/owner add|remove|list`: thêm / bớt **Owner phụ** (đủ quyền Owner). Chỉ Owner gốc (`OWNER_ID`) thêm / bớt được, Owner gốc không thể bị bỏ.
 - `/staff add|remove|list|role`: quản lý Staff.
 - `/config set|clear|show|legit_count`: quản lý kênh / danh mục của bot.
-- `/config legit_dem bat|tat`: bật / tắt tự đổi tên kênh legit, lưu riêng theo ID từng server (mặc định bật). Khi tắt, bot vẫn đếm và react emoji, chỉ không đụng đến tên kênh.
+- `/config legit_dem bat|tat`: bật / tắt đếm số legit, lưu riêng theo ID từng server (mặc định bật). Server tắt: bot vẫn react emoji nhưng không đếm số và không đổi tên kênh. Server bật: đếm, react và đổi tên kênh như bình thường.
+- Kênh legit đặt riêng cho từng server bằng `/config set muc:Kênh legit` (chạy ở server đó). Bộ đếm số legit cũng tách riêng theo server.
+- Mỗi lần bot khởi động / deploy, bot tự quét lại kênh legit của tất cả server (100 tin mới nhất): tin đúng mẫu `+1 legit @người_bán ...` chưa được react thì react bù (server bật đếm thì đếm số theo thứ tự cũ → mới rồi đổi tên kênh), đồng thời cập nhật lại bảng xếp hạng.
+- `.done` (hoặc `/done`): cộng doanh thu cho khách và sửa ngay bảng xếp hạng của mọi server. Mỗi ticket chỉ ghi doanh thu đúng 1 lần (dùng chung với nút Confirm).
 - `/set_kenhsold danhmuc`: danh mục chứa kênh đã bán.
 
 ## Chuyển dữ liệu từ bản cũ (JSON)

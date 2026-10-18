@@ -31,8 +31,9 @@ const { sendTranscript } = require('./utils/transcript');
 const { stickyCache } = require('./utils/cache');
 const { buildHelpEmbed } = require('./utils/help');
 const { buildLeaderboardPayload, refreshLeaderboardMessage } = require('./commands/leaderboard');
-const { cfg, getExtraStaff, getExtraOwners, isLegitEnabled } = require('./utils/runtime');
-const { loadConfig } = require('./utils/config');
+const { processDone } = require('./commands/done');
+const { cfg, getExtraStaff, getExtraOwners, isLegitEnabled, isLegitChannel, getLegitChannelMap } = require('./utils/runtime');
+const { loadConfig, setLegitChannel } = require('./utils/config');
 const { scheduleLegitRename } = require('./utils/legit');
 const { buildCategoryPicker, isCategoryPicker, handleCategoryPick, deleteChannel, parseChannelId } = require('./utils/channelManager');
 
@@ -926,9 +927,24 @@ function onLegitCooldown(userId) {
     return false;
 }
 
-// Đếm legit: +1 vào bộ đếm, thả 3 emoji vào tin legit, rồi (nếu rename) đổi tên kênh thành 『✅』𝙇𝙀𝙂𝙄𝙏-<số>
+// Tin legit đã xử lý (trong RAM): tránh đếm trùng giữa tin mới và lần quét lúc khởi động
+const legitHandled = new Set();
+function markLegitHandled(id) {
+    if (!id) return true;
+    if (legitHandled.has(id)) return false;
+    legitHandled.add(id);
+    if (legitHandled.size > 5000) legitHandled.delete(legitHandled.values().next().value);
+    return true;
+}
+
+// Xử lý 1 tin legit. Luôn thả 3 emoji.
+//  - Server BẬT đếm (mặc định): +1 vào bộ đếm RIÊNG của server, rồi (nếu rename) đổi tên kênh thành 『✅』𝙇𝙀𝙂𝙄𝙏-<số>
+//  - Server TẮT đếm (/config legit_dem): chỉ react, không đếm số, không đụng tên kênh
+// Trả về số legit vừa đếm, hoặc null nếu không đếm.
 async function reactLegit(message, { rename = true } = {}) {
-    const number = await db.nextLegitNumber(C.LEGIT_START);
+    if (!markLegitHandled(message.id)) return null;
+    const counting = isLegitEnabled(message.guild.id);
+    const number = counting ? await db.nextLegitNumber(C.LEGIT_START, message.guild.id) : null;
 
     for (const [i, emoji] of C.LEGIT_REACTIONS.entries()) {
         try {
@@ -942,7 +958,63 @@ async function reactLegit(message, { rename = true } = {}) {
         await new Promise(r => setTimeout(r, 200));
     }
 
-    if (rename) scheduleLegitRename(message.channel, number);   // tắt ở /config legit_dem thì không đụng tên kênh
+    if (counting && rename) scheduleLegitRename(message.channel, number);
+    return number;
+}
+
+// ==========================================
+// QUÉT LẠI KÊNH LEGIT KHI BOT KHỞI ĐỘNG (bù các tin legit mới khi bot đang tắt / đang deploy)
+// ==========================================
+const LEGIT_SCAN_LIMIT = 100;   // quét tối đa 100 tin mới nhất mỗi kênh (giới hạn của Discord cho 1 lần fetch)
+const hasMyReaction = (m) => Boolean(m.reactions?.cache?.some(r => r.me));
+
+async function scanLegitChannel(channel) {
+    const msgs = await channel.messages.fetch({ limit: LEGIT_SCAN_LIMIT }).catch(err => {
+        console.warn(`[LEGIT] Không đọc được lịch sử kênh ${channel.id}: ${err.message}`);
+        return null;
+    });
+    if (!msgs) return { reacted: 0, last: null };
+
+    // Tin legit đúng mẫu mà bot CHƯA react, xử lý từ cũ đến mới để số legit đúng thứ tự
+    const todo = [...msgs.values()]
+        .filter(m => !m.author?.bot && C.LEGIT_PATTERN.test(m.content || '') && !hasMyReaction(m))
+        .sort((a, b) => (a.createdTimestamp || 0) - (b.createdTimestamp || 0));
+
+    let last = null;
+    for (const m of todo) {
+        await db.clearRemindersForBuyer(m.author.id).catch(() => null);
+        const n = await reactLegit(m, { rename: false });
+        if (n !== null) last = n;
+    }
+    // Server bật đếm: đổi tên kênh 1 lần theo số cuối cùng. Server tắt đếm: không đụng tên kênh.
+    if (last !== null) scheduleLegitRename(channel, last, { force: true });
+    return { reacted: todo.length, last };
+}
+
+// Quét kênh legit của TẤT CẢ server (mỗi server 1 kênh). Kênh đặt bằng biến AUTOREACTER_VOUCH cũng được gắn vào đúng server.
+async function scanLegitChannels() {
+    const ids = new Set([...getLegitChannelMap().values()]);
+    const fallback = cfg('AUTOREACTER_VOUCH');
+    if (fallback) ids.add(fallback);
+
+    const summary = [];
+    for (const id of ids) {
+        try {
+            const channel = await client.channels.fetch(id).catch(() => null);
+            if (!channel?.messages || !channel.guildId) continue;
+            const own = getLegitChannelMap().get(channel.guildId);
+            if (!own) await setLegitChannel(channel.guildId, channel.id).catch(() => null);   // nhớ kênh legit theo server
+            else if (own !== channel.id) continue;   // server này đã có kênh legit riêng khác, bỏ qua kênh dự phòng
+            const r = await scanLegitChannel(channel);
+            summary.push({ guildId: channel.guildId, channelId: channel.id, counting: isLegitEnabled(channel.guildId), ...r });
+        } catch (err) {
+            console.error(`[LỖI QUÉT LEGIT ${id}]:`, err.message);
+        }
+    }
+    for (const s of summary) {
+        console.log(`[LEGIT] Server ${s.guildId}: ${s.counting ? 'đếm số' : 'chỉ react (tắt đếm)'}, đã react ${s.reacted} tin${s.last !== null ? `, số mới nhất ${s.last}` : ''}.`);
+    }
+    return summary;
 }
 
 // Staff/Owner gõ "sold" trong kênh bán hàng. Trả về true nếu đã xử lý.
@@ -1011,11 +1083,10 @@ async function handleMessage(message) {
             if (cmd === '.resend') return await handleResendCommand(message);
         }
 
-        // 2. Kênh legit: chỉ đếm tin đúng mẫu "+1 legit <@người_bán> ...". Mỗi lần: +1, react 3 emoji, đổi tên kênh.
-        const legitChannelId = cfg('AUTOREACTER_VOUCH');
-        if (legitChannelId && message.channel.id === legitChannelId && C.LEGIT_PATTERN.test(message.content)) {
+        // 2. Kênh legit của server: chỉ tin đúng mẫu "+1 legit <@người_bán> ..." mới được xử lý (react; server bật đếm thì +1 và đổi tên kênh).
+        if (isLegitChannel(message.guild.id, message.channel.id) && C.LEGIT_PATTERN.test(message.content)) {
             await db.clearRemindersForBuyer(message.author.id);   // khách đã vouch thì ngừng nhắc
-            if (!onLegitCooldown(message.author.id)) await reactLegit(message, { rename: isLegitEnabled(message.guild.id) });
+            if (!onLegitCooldown(message.author.id)) await reactLegit(message);
         }
 
         // 3. Lệnh tin nhắn "sold"
@@ -1053,6 +1124,30 @@ async function handleMessage(message) {
                     return;
                 }
             }
+        }
+
+        // 3c. Lệnh .done <@khách | id> <số tiền> [số đơn] (Staff/Owner): cộng doanh thu + cập nhật bảng xếp hạng
+        if (/^\.done(\s|$)/i.test(message.content.trim())) {
+            if (!checkStaffOrOwner(message.member)) {
+                return await message.reply({ content: '❌ Lệnh `.done` chỉ dành cho Staff hoặc Owner!' }).catch(() => null);
+            }
+            const usage = '⚠️ **Cú pháp:** `.done @khách <số tiền> [số đơn]` (vd: `.done @khách 150k`)';
+            const parts = message.content.trim().split(/\s+/).slice(1);
+            const um = (parts[0] || '').match(/^<@!?(\d{17,20})>$/) || (parts[0] || '').match(/^(\d{17,20})$/);
+            if (!um || !parts[1]) return await message.reply({ content: usage }).catch(() => null);
+            if (parts[2] !== undefined && !/^\d+$/.test(parts[2])) return await message.reply({ content: usage }).catch(() => null);
+
+            const result = await processDone({
+                channelId: message.channel.id,
+                customerId: um[1],
+                amountText: parts[1],
+                orders: parts[2] !== undefined ? parseInt(parts[2], 10) : 1,
+                user: message.author
+            });
+            if (!result.ok) return await message.reply({ content: result.msg }).catch(() => null);
+            await message.channel.send({ embeds: [result.embed] });
+            await refreshLeaderboardMessage(client).catch(err => console.warn('[LEADERBOARD] Không cập nhật được:', err.message));
+            return;
         }
 
         // 4. Lệnh .vietqr
@@ -1185,6 +1280,8 @@ client.once(Events.ClientReady || 'ready', async () => {
     }
 
     await reconcileOnStartup();
+    await scanLegitChannels().catch(err => console.error('[LỖI QUÉT LEGIT]:', err));
+    await refreshLeaderboardMessage(client).catch(() => null);   // bảng xếp hạng luôn khớp dữ liệu sau mỗi lần khởi động
     setInterval(() => runVouchReminders().catch(err => console.error('[Lỗi quét nhắc vouch]:', err.message)), 60_000);
 });
 
@@ -1221,5 +1318,5 @@ if (require.main === module) {
 
 module.exports = {
     client, handleInteraction, handleMessage, handleCancelTicket, closeTicketChannel,
-    runVouchReminders, reconcileOnStartup, resendCredentials, toSoldName, toPendingName, toAvailableName
+    runVouchReminders, reconcileOnStartup, scanLegitChannels, resendCredentials, toSoldName, toPendingName, toAvailableName
 };

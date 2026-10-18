@@ -5,6 +5,8 @@ const extraStaff = new Set();
 const extraOwners = new Set();
 // Bật / tắt đếm legit theo ID server. Mặc định (chưa đặt) = BẬT.
 const legitEnabled = new Map();
+// Kênh legit theo ID server (đặt bằng /config set muc:Kênh legit). Chưa đặt thì dùng biến AUTOREACTER_VOUCH làm dự phòng.
+const legitChannels = new Map();
 
 function cfg(name) {
     const o = overrides.get(name);
@@ -45,4 +47,18 @@ const isLegitEnabled = (guildId) => legitEnabled.get(String(guildId)) !== false;
 const setLegitEnabled = (guildId, enabled) => { legitEnabled.set(String(guildId), Boolean(enabled)); };
 const clearLegitEnabled = () => legitEnabled.clear();
 
-module.exports = { isLegitEnabled, setLegitEnabled, clearLegitEnabled, cfg, cfgSource, setOverride, clearOverrides, getExtraOwners, isExtraOwner, setExtraOwners, getExtraStaff, isExtraStaff, setExtraStaff };
+const setLegitChannel = (guildId, channelId) => {
+    if (!channelId) legitChannels.delete(String(guildId));
+    else legitChannels.set(String(guildId), String(channelId));
+};
+const clearLegitChannels = () => legitChannels.clear();
+const getLegitChannelMap = () => new Map(legitChannels);
+// Kênh legit của 1 server: cài riêng cho server đó, nếu chưa có thì dùng biến AUTOREACTER_VOUCH
+const legitChannelFor = (guildId) => legitChannels.get(String(guildId)) || cfg('AUTOREACTER_VOUCH');
+// Kênh này có phải kênh legit của server đó không: server đã cài kênh riêng thì chỉ kênh đó, chưa cài thì dùng biến AUTOREACTER_VOUCH
+const isLegitChannel = (guildId, channelId) => {
+    const own = legitChannels.get(String(guildId));
+    return own ? own === String(channelId) : cfg('AUTOREACTER_VOUCH') === String(channelId);
+};
+
+module.exports = { setLegitChannel, clearLegitChannels, getLegitChannelMap, legitChannelFor, isLegitChannel, isLegitEnabled, setLegitEnabled, clearLegitEnabled, cfg, cfgSource, setOverride, clearOverrides, getExtraOwners, isExtraOwner, setExtraOwners, getExtraStaff, isExtraStaff, setExtraStaff };

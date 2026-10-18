@@ -26,6 +26,7 @@ function buildHelpEmbed(member) {
                     '`.resend`: gửi lại thông tin đăng nhập qua DM khi DM lỗi (trong ticket).',
                     '`.vietqr số_tiền ghi_chú`: tạo mã VietQR nhanh trong kênh hiện tại.',
                     '`sold`: gõ trong kênh bán hàng để đánh dấu đã bán ngoài hệ thống (không cần dấu chấm).',
+                    '`.done @khách số_tiền [số_đơn]`: ghi doanh thu cho khách + cập nhật bảng xếp hạng.',
                     '`.taokenh tên`: tạo kênh mới `✅・tên`, bot hiện menu cho bạn chọn danh mục.',
                     '`.xoakenh #kênh` hoặc `.xoakenh id`: xóa kênh (không xóa được kênh hệ thống / card còn hàng).'
                 ].join('\n')
@@ -55,7 +56,7 @@ function buildHelpEmbed(member) {
                 '`/owner add|remove|list`: Owner phụ (chỉ Owner gốc thêm / bớt được).',
                 '`/staff add|remove|list|role`: quản lý Staff và role Staff.',
                 '`/config set|clear|show`: đặt kênh legit, vouch, stock, ticket, sold, bill, transcript...',
-                '`/config legit_dem bat|tat`: bật / tắt tự đổi tên kênh legit (vẫn đếm + react, lưu theo từng server).',
+                '`/config legit_dem bat|tat`: bật / tắt đếm số legit (tắt = chỉ react, lưu theo từng server).',
                 '`/config legit_count so`: chỉnh số legit hiện tại và đổi tên kênh legit.',
                 '`/config check_emoji`: kiểm tra 3 emoji legit và quyền của bot.',
                 '`/set_kenhsold danhmuc`: danh mục chứa kênh tài khoản đã bán.'

@@ -2,8 +2,8 @@ const { SlashCommandBuilder, EmbedBuilder, MessageFlags, PermissionFlagsBits } =
 const db = require('../utils/db');
 const C = require('../utils/constants');
 const { isOwnerId } = require('../utils/permissions');
-const { cfg, cfgSource, isLegitEnabled } = require('../utils/runtime');
-const { CONFIG_KEYS, setConfig, setLegitEnabled } = require('../utils/config');
+const { cfg, cfgSource, isLegitEnabled, legitChannelFor } = require('../utils/runtime');
+const { CONFIG_KEYS, setConfig, setLegitEnabled, setLegitChannel } = require('../utils/config');
 const { legitName, scheduleLegitRename } = require('../utils/legit');
 
 const choices = CONFIG_KEYS.map(k => ({ name: k.name, value: k.value }));
@@ -20,8 +20,8 @@ module.exports = {
             .addStringOption(o => o.setName('muc').setDescription('Mục cần xóa').setRequired(true).addChoices(...choices)))
         .addSubcommand(sub => sub.setName('show').setDescription('Xem cấu hình hiện tại'))
         .addSubcommand(sub => sub.setName('check_emoji').setDescription('Kiểm tra 3 emoji legit và quyền của bot trong kênh legit'))
-        .addSubcommand(sub => sub.setName('legit_dem').setDescription('Bật / tắt tự đổi tên kênh legit theo số đếm (server này)')
-            .addStringOption(o => o.setName('trangthai').setDescription('Bật hay tắt đổi tên kênh legit').setRequired(true)
+        .addSubcommand(sub => sub.setName('legit_dem').setDescription('Bật / tắt đếm số legit cho server này (tắt = chỉ react emoji)')
+            .addStringOption(o => o.setName('trangthai').setDescription('Bật hay tắt đếm số legit').setRequired(true)
                 .addChoices({ name: 'Bật', value: 'on' }, { name: 'Tắt', value: 'off' })))
         .addSubcommand(sub => sub.setName('legit_count').setDescription('Chỉnh số legit hiện tại (và đổi tên kênh legit)')
             .addIntegerOption(o => o.setName('so').setDescription('Số legit đang hiển thị, vd 632 (legit kế tiếp sẽ là 633)')
@@ -37,7 +37,9 @@ module.exports = {
         if (sub === 'set') {
             const key = interaction.options.getString('muc');
             const channel = interaction.options.getChannel('kenh');
-            await setConfig(key, channel.id);
+            // Kênh legit lưu RIÊNG theo server (mỗi server 1 kênh legit), không ghi đè mục chung của server khác
+            if (key === 'AUTOREACTER_VOUCH') await setLegitChannel(channel.guildId || interaction.guildId, channel.id);
+            else await setConfig(key, channel.id);
             return await interaction.reply({
                 content: `✅ Đã đặt **${label(key)}** = <#${channel.id}>`, flags: MessageFlags.Ephemeral
             });
@@ -45,8 +47,9 @@ module.exports = {
 
         if (sub === 'clear') {
             const key = interaction.options.getString('muc');
-            await setConfig(key, null);
-            const fallback = cfg(key);
+            if (key === 'AUTOREACTER_VOUCH') { if (interaction.guildId) await setLegitChannel(interaction.guildId, null); }
+            else await setConfig(key, null);
+            const fallback = key === 'AUTOREACTER_VOUCH' ? legitChannelFor(interaction.guildId) : cfg(key);
             return await interaction.reply({
                 content: `✅ Đã xóa cài đặt **${label(key)}**.` + (fallback ? ` Đang dùng giá trị biến môi trường: <#${fallback}>` : ' Hiện chưa có giá trị nào.'),
                 flags: MessageFlags.Ephemeral
@@ -66,7 +69,7 @@ module.exports = {
             }
 
             const perms = [];
-            const legitId = cfg('AUTOREACTER_VOUCH');
+            const legitId = legitChannelFor(interaction.guildId);
             const ch = legitId ? await interaction.client.channels.fetch(legitId).catch(() => null) : null;
             const mine = ch?.permissionsFor?.(interaction.client.user);
             if (!legitId) perms.push('⚠️ Chưa đặt kênh legit (dùng `/config set`).');
@@ -91,8 +94,8 @@ module.exports = {
             await setLegitEnabled(interaction.guildId, on);
             return await interaction.reply({
                 content: on
-                    ? '✅ Đã **BẬT** đổi tên kênh legit cho server này (bot đếm, react và đổi tên kênh theo số legit).'
-                    : '⏸️ Đã **TẮT** đổi tên kênh legit cho server này (bot vẫn đếm và react emoji, chỉ không đụng đến tên kênh).',
+                    ? '✅ Đã **BẬT** đếm số legit cho server này (bot đếm, react emoji và đổi tên kênh theo số legit).'
+                    : '⏸️ Đã **TẮT** đếm số legit cho server này (bot vẫn react emoji, không đếm số và không đụng đến tên kênh).',
                 flags: MessageFlags.Ephemeral
             });
         }
@@ -100,9 +103,9 @@ module.exports = {
         if (sub === 'legit_count') {
             const shown = interaction.options.getInteger('so');
             await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-            await db.saveSetting('LEGIT_COUNT', shown + 1);   // lưu số của lần legit KẾ TIẾP
+            await db.saveSetting(`LEGIT_COUNT_${interaction.guildId}`, shown + 1);   // số của lần legit KẾ TIẾP, riêng theo server
             let renamed = false;
-            const legitId = cfg('AUTOREACTER_VOUCH');
+            const legitId = legitChannelFor(interaction.guildId);
             if (legitId) {
                 const ch = await interaction.client.channels.fetch(legitId).catch(() => null);
                 if (ch) { await scheduleLegitRename(ch, shown, { force: true }); renamed = true; }
@@ -115,13 +118,13 @@ module.exports = {
 
         // show
         const lines = CONFIG_KEYS.map(k => {
-            const v = cfg(k.value);
+            const v = k.value === 'AUTOREACTER_VOUCH' ? legitChannelFor(interaction.guildId) : cfg(k.value);
             return `• **${k.name}**: ${v ? `<#${v}> ${SOURCE_TEXT[cfgSource(k.value)]}` : '*(chưa đặt)*'}`;
         });
         const embed = new EmbedBuilder()
             .setTitle('⚙️ Cấu hình kênh của bot')
             .setColor('#00FFAA')
-            .setDescription(lines.join('\n') + `\n• **Đổi tên kênh legit (server này)**: ${isLegitEnabled(interaction.guildId) ? '🟢 Bật' : '🔴 Tắt'}`)
+            .setDescription(lines.join('\n') + `\n• **Đếm số legit (server này)**: ${isLegitEnabled(interaction.guildId) ? '🟢 Bật' : '🔴 Tắt'}`)
             .setFooter({ text: `Tên kênh legit: ${C.LEGIT_CHANNEL_PREFIX}<số>` });
         await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     }

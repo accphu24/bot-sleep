@@ -242,11 +242,21 @@ async function getSettingsWithPrefix(prefix) {
     return docs.filter(d => d.value !== null && d.value !== undefined);
 }
 
-// Số legit tiếp theo (nguyên tử). Trả về số hiện tại rồi tăng lên 1 (bắt đầu từ `start`).
-async function nextLegitNumber(start = 800) {
-    await col('settings').updateOne({ _id: 'LEGIT_COUNT' }, { $setOnInsert: { value: start } }, { upsert: true });
+// Số legit tiếp theo (nguyên tử), đếm RIÊNG theo từng server. Trả về số hiện tại rồi tăng lên 1 (bắt đầu từ `start`).
+// Bản cũ dùng 1 bộ đếm chung `LEGIT_COUNT`: lần đầu một server đếm sẽ nhận số cũ đó (rồi xóa khóa cũ).
+async function nextLegitNumber(start = 800, guildId = null) {
+    const id = guildId ? `LEGIT_COUNT_${guildId}` : 'LEGIT_COUNT';
+    let seed = start;
+    if (guildId && !(await col('settings').findOne({ _id: id }))) {
+        const legacy = await col('settings').findOne({ _id: 'LEGIT_COUNT' });
+        if (legacy && legacy.value !== undefined && legacy.value !== null) {
+            seed = legacy.value;
+            await col('settings').deleteOne({ _id: 'LEGIT_COUNT' });
+        }
+    }
+    await col('settings').updateOne({ _id: id }, { $setOnInsert: { value: seed } }, { upsert: true });
     const doc = await col('settings').findOneAndUpdate(
-        { _id: 'LEGIT_COUNT' },
+        { _id: id },
         { $inc: { value: 1 } },
         { returnDocument: 'before' }
     );
