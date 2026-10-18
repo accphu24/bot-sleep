@@ -689,14 +689,14 @@ const msgFor = (channel, authorId, content, member) => {
 
 
     console.log('\n[X] Tạo / xóa kênh');
-    await test('.taokenh: Staff tạo kênh, tên được chuẩn hóa, cùng danh mục với kênh gõ lệnh', async () => {
+    await test('.taokenh: Staff tạo kênh, tên được chuẩn hóa + thêm ✅ đầu tên (slash thì không), cùng danh mục với kênh gõ lệnh', async () => {
         const here = makeChannel('chat', { parentId: '600000000000000001' });
         const before = guild.channels.created.length;
         const m = msgFor(here, SELLER, '.taokenh Kênh Mới 123', staffMember());
         await index.handleMessage(m);
         assert.equal(guild.channels.created.length, before + 1);
         const { ch, opts } = guild.channels.created[before];
-        assert.equal(opts.name, 'kênh-mới-123');
+        assert.equal(opts.name, '✅・kênh-mới-123');
         assert.equal(opts.parent, '600000000000000001');
         assert.ok(JSON.stringify(m.replies).includes(ch.id));
     });
@@ -705,7 +705,7 @@ const msgFor = (channel, authorId, content, member) => {
         const before = guild.channels.created.length;
         await index.handleMessage(msgFor(here, OWNER, 'taokenh abc', makeMember(OWNER)));
         assert.equal(guild.channels.created.length, before + 1);
-        assert.equal(guild.channels.created[before].opts.name, 'abc');
+        assert.equal(guild.channels.created[before].opts.name, '✅・abc');
     });
     await test('taokenh: khách thường không tạo được (có dấu chấm thì báo lỗi, không dấu chấm thì bỏ qua)', async () => {
         const here = makeChannel('chat3');

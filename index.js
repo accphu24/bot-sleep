@@ -1034,7 +1034,7 @@ async function handleMessage(message) {
                     if (hasDot) return;
                 } else if (cmdName === 'taokenh') {
                     if (!rest) return await message.reply({ content: '⚠️ **Cú pháp:** `.taokenh <tên kênh>`' }).catch(() => null);
-                    const result = await createTextChannel(message.guild, rest, { parentId: message.channel.parentId });
+                    const result = await createTextChannel(message.guild, rest, { parentId: message.channel.parentId, prefix: '✅・' });
                     if (!result.ok) return await message.reply({ content: result.msg }).catch(() => null);
                     return await message.reply({ content: `✅ Đã tạo kênh <#${result.channel.id}> (\`${result.channel.id}\`).` }).catch(() => null);
                 } else {

@@ -20,8 +20,10 @@ function sanitizeChannelName(raw) {
 }
 
 // Tạo kênh chữ trong server (nằm cùng danh mục với kênh đang gõ lệnh nếu có)
-async function createTextChannel(guild, rawName, { parentId } = {}) {
-    const name = sanitizeChannelName(rawName);
+// prefix: chuỗi gắn vào đầu tên (vd '✅・' cho lệnh prefix). Slash command không truyền thì tên giữ nguyên.
+async function createTextChannel(guild, rawName, { parentId, prefix = '' } = {}) {
+    const base = sanitizeChannelName(rawName);
+    const name = base ? (prefix + base).slice(0, MAX_NAME_LEN) : '';
     if (!name) return { ok: false, msg: '⚠️ Tên kênh không hợp lệ (sau khi lọc ký tự đặc biệt bị rỗng).' };
 
     try {

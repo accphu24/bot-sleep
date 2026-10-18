@@ -26,7 +26,7 @@ function buildHelpEmbed(member) {
                     '`.resend`: gửi lại thông tin đăng nhập qua DM khi DM lỗi (trong ticket).',
                     '`.vietqr số_tiền ghi_chú`: tạo mã VietQR nhanh trong kênh hiện tại.',
                     '`sold`: gõ trong kênh bán hàng để đánh dấu đã bán ngoài hệ thống (không cần dấu chấm).',
-                    '`.taokenh tên`: tạo kênh mới (cùng danh mục với kênh bạn gõ).',
+                    '`.taokenh tên`: tạo kênh mới `✅・tên` (cùng danh mục với kênh bạn gõ).',
                     '`.xoakenh #kênh` hoặc `.xoakenh id`: xóa kênh (không xóa được kênh hệ thống / card còn hàng).'
                 ].join('\n')
             },
