@@ -2,7 +2,7 @@
 // Dùng cho log lúc khởi động và lệnh /config debug.
 const { PermissionFlagsBits } = require('discord.js');
 const C = require('./constants');
-const { cfg, isLegitEnabled, getLegitChannelMap } = require('./runtime');
+const { isLegitEnabled, getLegitChannelMap } = require('./runtime');
 const milestones = require('./milestones');
 const { getTrace } = require('./logger');
 
@@ -18,8 +18,6 @@ const CHANNEL_PERMS = [
 function resolveLegitChannel(guildId) {
     const own = getLegitChannelMap().get(String(guildId));
     if (own) return { id: own, source: 'server' };
-    const env = cfg('AUTOREACTER_VOUCH');
-    if (env) return { id: env, source: 'env' };
     return { id: null, source: 'none' };
 }
 
@@ -39,7 +37,7 @@ async function diagnoseGuild(client, guild) {
         if (!ch) {
             d.problems.push(`Kênh legit <#${legit.id}> không tồn tại hoặc bot không thấy (Missing Access).`);
         } else if (ch.guildId !== guild.id) {
-            d.problems.push(`Server này chưa đặt kênh legit riêng: bot đang dùng biến AUTOREACTER_VOUCH = <#${legit.id}> là kênh của server KHÁC ("${ch.guild?.name || ch.guildId}"), nên ở server này bot KHÔNG react. Chạy \`/config set muc:Kênh legit\` trong server này.`);
+            d.problems.push(`Kênh legit đã lưu <#${legit.id}> thuộc server KHÁC ("${ch.guild?.name || ch.guildId}"), nên ở server này bot KHÔNG react. Chạy \`/config set muc:Kênh legit\` trong server này.`);
         } else {
             const perms = ch.permissionsFor?.(client.user) || (me ? ch.permissionsFor?.(me) : null);
             if (!perms) {
@@ -92,7 +90,7 @@ async function diagnoseGuild(client, guild) {
 
 function formatDiagnosis(d, { discord = false } = {}) {
     const ch = d.legit.id ? (discord ? `<#${d.legit.id}>` : d.legit.id) : '(chưa đặt)';
-    const src = { server: 'đặt bằng /config cho server này', env: 'biến môi trường AUTOREACTER_VOUCH', none: '' }[d.legit.source];
+    const src = { server: 'đặt bằng /config cho server này', none: '' }[d.legit.source];
     const lines = [
         `**Server:** ${d.guildName} (${d.guildId})`,
         `**Kênh legit:** ${ch}${src ? ` (${src})` : ''}`,

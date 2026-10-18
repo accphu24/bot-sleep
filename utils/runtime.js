@@ -54,11 +54,8 @@ const setLegitChannel = (guildId, channelId) => {
 const clearLegitChannels = () => legitChannels.clear();
 const getLegitChannelMap = () => new Map(legitChannels);
 // Kênh legit của 1 server: cài riêng cho server đó, nếu chưa có thì dùng biến AUTOREACTER_VOUCH
-const legitChannelFor = (guildId) => legitChannels.get(String(guildId)) || cfg('AUTOREACTER_VOUCH');
+const legitChannelFor = (guildId) => legitChannels.get(String(guildId)) || '';
 // Kênh này có phải kênh legit của server đó không: server đã cài kênh riêng thì chỉ kênh đó, chưa cài thì dùng biến AUTOREACTER_VOUCH
-const isLegitChannel = (guildId, channelId) => {
-    const own = legitChannels.get(String(guildId));
-    return own ? own === String(channelId) : cfg('AUTOREACTER_VOUCH') === String(channelId);
-};
+const isLegitChannel = (guildId, channelId) => legitChannels.get(String(guildId)) === String(channelId);
 
 module.exports = { setLegitChannel, clearLegitChannels, getLegitChannelMap, legitChannelFor, isLegitChannel, isLegitEnabled, setLegitEnabled, clearLegitEnabled, cfg, cfgSource, setOverride, clearOverrides, getExtraOwners, isExtraOwner, setExtraOwners, getExtraStaff, isExtraStaff, setExtraStaff };

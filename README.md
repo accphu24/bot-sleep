@@ -34,7 +34,7 @@ Chỉnh số hiện tại bằng `/config legit_count so:632` (legit kế tiếp
 Nếu thiếu emoji: chạy `/config check_emoji` để biết emoji nào bot không thấy và quyền còn thiếu. Khi 1 emoji lỗi, bot thả emoji thường thay thế để luôn đủ 3 reaction.
 
 ## Debug khi 1 server không react emoji
-Bot chạy nhiều server thì **mỗi server phải có kênh legit riêng**. Biến `AUTOREACTER_VOUCH` chỉ là kênh dự phòng của đúng 1 server; server còn lại phải đặt bằng lệnh (chạy NGAY TRONG server đó):
+Bot chạy nhiều server thì **mỗi server phải có kênh legit riêng**. Kênh legit KHÔNG đặt bằng biến Railway: mỗi server tự đặt bằng lệnh (chạy NGAY TRONG server đó):
 `/config set muc:Kênh legit kenh:#kênh-legit`
 Cách tìm nguyên nhân:
 1. Chạy `/config debug` trong server không react: bot liệt kê kênh legit đang dùng, quyền còn thiếu, emoji nào không thấy, và các tin legit gần nhất bot đã nhận / bỏ qua (kèm lý do).

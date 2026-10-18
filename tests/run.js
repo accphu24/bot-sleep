@@ -130,6 +130,7 @@ const msgFor = (channel, authorId, content, member) => {
 
 (async () => {
     await db.connect();
+    await require(path.join(root, 'utils/config')).setLegitChannel(guild.id, LEGIT_CH);
     console.log('\n[1] Tiền, mã hóa, form');
     await test('parseAmount hiểu định dạng tiền kiểu Việt', () => {
         const cases = { '140k': 140000, '250000': 250000, '1.2M': 1200000, '1.500.000': 1500000, '1.500.000đ': 1500000, '1,5tr': 1500000, '2tr': 2000000, '140': 140000, '100.000': 100000, '': 0 };

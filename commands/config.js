@@ -51,7 +51,7 @@ module.exports = {
             const key = interaction.options.getString('muc');
             if (key === 'AUTOREACTER_VOUCH') { if (interaction.guildId) await setLegitChannel(interaction.guildId, null); }
             else await setConfig(key, null);
-            const fallback = key === 'AUTOREACTER_VOUCH' ? legitChannelFor(interaction.guildId) : cfg(key);
+            const fallback = key === 'AUTOREACTER_VOUCH' ? '' : cfg(key);
             return await interaction.reply({
                 content: `✅ Đã xóa cài đặt **${label(key)}**.` + (fallback ? ` Đang dùng giá trị biến môi trường: <#${fallback}>` : ' Hiện chưa có giá trị nào.'),
                 flags: MessageFlags.Ephemeral
