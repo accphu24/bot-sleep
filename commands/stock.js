@@ -15,6 +15,8 @@ const db = require('../utils/db');
 const C = require('../utils/constants');
 const { formatPriceDisplay } = require('../utils/money');
 const { buildCardRow } = require('../utils/cardButtons');
+const { checkStaffOrOwner } = require('../utils/permissions');
+const { cfg } = require('../utils/runtime');
 
 function countCapes(capesText) {
     if (!capesText) return 0;
@@ -60,12 +62,9 @@ module.exports = {
 
     async execute(interaction) {
         const ownerId = process.env.OWNER_ID;
-        const staffRoleId = process.env.STAFF_ROLE_ID;
+        const staffRoleId = cfg('STAFF_ROLE_ID');
 
-        const isOwner = interaction.user.id === ownerId;
-        const isStaff = staffRoleId && interaction.member?.roles?.cache?.has(staffRoleId);
-
-        if (!isOwner && !isStaff) {
+        if (!checkStaffOrOwner(interaction.member)) {
             return await interaction.reply({ 
                 content: '❌ Bạn không có quyền đăng bán tài khoản (Chỉ dành cho Staff hoặc Owner)!', 
                 flags: MessageFlags.Ephemeral 
@@ -130,6 +129,15 @@ module.exports = {
                 return await interaction.editReply({ content: '❌ Không thể tạo ảnh card!' });
             }
 
+            // Lưu tài khoản TRƯỚC khi đăng card. Nếu giữa chừng có người vừa mở đơn (PROCESSING) thì dừng,
+            // không bao giờ ghi đè trạng thái đang giao dịch về AVAILABLE.
+            const saved = await db.upsertAccount({ username, price, rank, capes, sellerId, status: 'AVAILABLE' });
+            if (!saved) {
+                return await interaction.editReply({
+                    content: '⏳ Tài khoản này vừa có người mở đơn giao dịch, không thể đăng lại card lúc này!'
+                });
+            }
+
             const attachment = new AttachmentBuilder(imageBuffer, { 
                 name: 'card.png',
                 description: `Minecraft Card: ${username}`
@@ -147,7 +155,7 @@ module.exports = {
             const priceDisplay = formatPriceDisplay(price);
 
             // Xác định vị trí đăng
-            const stockId = process.env.STOCK_ID;
+            const stockId = cfg('STOCK_ID');
             let targetChannel = interaction.channel;
             let isDifferentChannel = false;
 
@@ -260,15 +268,9 @@ module.exports = {
             }
 
             // Cập nhật thông tin vào DB
-            await db.upsertAccount({
-                username,
-                price,
-                rank,
-                capes,
-                sellerId,
+            await db.updateAccount(username, {
                 cardMessageId: replyMessage.id,
-                cardChannelId: replyMessage.channelId,
-                status: 'AVAILABLE'
+                cardChannelId: replyMessage.channelId
             });
 
             if (!storedAcc || !storedAcc.hasCredentials) {

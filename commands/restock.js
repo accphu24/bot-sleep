@@ -1,21 +1,20 @@
-const { 
-    SlashCommandBuilder, 
-    EmbedBuilder, 
-    ChannelType, 
-    PermissionFlagsBits 
-} = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, ChannelType, MessageFlags } = require('discord.js');
+const { checkStaffOrOwner } = require('../utils/permissions');
+const { cfg } = require('../utils/runtime');
 
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('restock')
-        .setDescription('Thông báo danh sách các kênh trong kho stock')
-        .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
+        .setDescription('Thông báo danh sách các kênh trong kho stock'),
 
     async execute(interaction) {
+        if (!checkStaffOrOwner(interaction.member)) {
+            return await interaction.reply({ content: '❌ Lệnh này chỉ dành cho Staff hoặc Owner!', flags: MessageFlags.Ephemeral });
+        }
         // Phản hồi ẩn tạm thời để xử lý
-        await interaction.deferReply({ ephemeral: true });
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-        const stockCategoryId = process.env.STOCK_ID;
+        const stockCategoryId = cfg('STOCK_ID');
 
         if (!stockCategoryId || !/^\d{17,20}$/.test(stockCategoryId.trim())) {
             return await interaction.editReply({

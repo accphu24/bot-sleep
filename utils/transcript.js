@@ -1,5 +1,6 @@
 const { AttachmentBuilder } = require('discord.js');
 const { isValidSnowflake } = require('./permissions');
+const { cfg } = require('./runtime');
 
 const escapeHtml = (s) => String(s ?? '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -33,7 +34,7 @@ async function buildTranscriptFile(channel, maxMessages = 2000) {
 
 // Gửi transcript vào kênh TRANSCRIPT_ID (nếu có cấu hình). Trả về true nếu đã gửi.
 async function sendTranscript(client, channel, { closedBy = null, note = '' } = {}) {
-    const logId = (process.env.TRANSCRIPT_ID || '').trim();
+    const logId = cfg('TRANSCRIPT_ID');
     if (!isValidSnowflake(logId)) return false;
     const logChannel = await client.channels.fetch(logId).catch(() => null);
     if (!logChannel) return false;

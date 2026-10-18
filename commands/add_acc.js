@@ -6,6 +6,7 @@ const {
     ActionRowBuilder,
     MessageFlags
 } = require('discord.js');
+const { checkStaffOrOwner } = require('../utils/permissions');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -13,16 +14,10 @@ module.exports = {
         .setDescription('Mở form nhập thông tin tài khoản Minecraft vào kho'),
 
     async execute(interaction) {
-        const ownerId = process.env.OWNER_ID;
-        const staffRoleId = process.env.STAFF_ROLE_ID;
-
-        const isOwner = interaction.user.id === ownerId;
-        const isStaff = staffRoleId && interaction.member?.roles?.cache?.has(staffRoleId);
-
-        if (!isOwner && !isStaff) {
-            return await interaction.reply({ 
-                content: '❌ Bạn không có quyền sử dụng lệnh này (Chỉ dành cho Owner hoặc Staff)!', 
-                flags: MessageFlags.Ephemeral 
+        if (!checkStaffOrOwner(interaction.member)) {
+            return await interaction.reply({
+                content: '❌ Bạn không có quyền sử dụng lệnh này (Chỉ dành cho Owner hoặc Staff)!',
+                flags: MessageFlags.Ephemeral
             });
         }
 

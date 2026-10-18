@@ -1,5 +1,5 @@
 const { EmbedBuilder } = require('discord.js');
-const { checkStaffOrOwner } = require('./permissions');
+const { checkStaffOrOwner, isOwnerId } = require('./permissions');
 
 function buildHelpEmbed(member) {
     const embed = new EmbedBuilder()
@@ -11,7 +11,7 @@ function buildHelpEmbed(member) {
                 '1. Bấm nút **BUY** trên card tài khoản bạn muốn mua, bot sẽ tạo ticket riêng.',
                 '2. Chuyển khoản đúng số tiền và đúng **nội dung CK** trong ticket, rồi gửi ảnh bill vào ticket.',
                 '3. Chờ người bán bấm **Confirm**. Bot sẽ gửi thông tin tài khoản qua **tin nhắn riêng (DM)**, nhớ bật nhận DM từ thành viên server.',
-                '4. Sau khi nhận hàng, vào kênh vouch gõ: `+1 legit @người_bán mfa`.',
+                '4. Sau khi nhận hàng, vào kênh legit gõ: `+1 legit @người_bán mfa` (bot sẽ react xác nhận).',
                 '`.av` hoặc `.av @người_dùng`: xem avatar.',
                 '`.help`: xem hướng dẫn này.'
             ].join('\n')
@@ -25,14 +25,14 @@ function buildHelpEmbed(member) {
                     '`/add_acc`: mở form dán thông tin tài khoản vào kho (bot mã hóa mật khẩu).',
                     '`/stock acc username price`: đăng card bán kèm nút BUY. Tùy chọn: capes, rank, statshpx, statsdonut.',
                     '`/set_qr bank_name account_number bank_type`: cài ngân hàng để bot tạo mã VietQR.',
-                    '`/set_kenhsold danhmuc`: chọn danh mục chứa kênh tài khoản đã bán.',
                     '`/restock`: đăng danh sách các kênh đang còn hàng.'
                 ].join('\n')
             },
             {
                 name: '🛠️ Dành cho Staff / Owner: xử lý đơn',
                 value: [
-                    'Trong ticket: **Confirm** (xác nhận đã nhận tiền, bot giao hàng qua DM), **Close** (đóng ticket), **Gửi lại thông tin** (khi DM lỗi).',
+                    'Trong ticket: nút **Confirm** (xác nhận đã nhận tiền, bot giao hàng qua DM), nút **Gửi lại thông tin** hoặc gõ `.resend` (khi DM lỗi).',
+                    '`.close`: **chỉ Staff/Owner** gõ trong ticket để đóng ticket (khách không thể tự đóng).',
                     '`sold`: gõ trong kênh bán hàng để đánh dấu đã bán ngoài hệ thống (không cần dấu chấm).',
                     '`.vietqr số_tiền ghi_chú`: tạo mã VietQR nhanh trong kênh hiện tại.',
                     '`/done customer amount`: ghi doanh thu thủ công (không dùng nếu đã Confirm).',
@@ -42,6 +42,18 @@ function buildHelpEmbed(member) {
                 ].join('\n')
             }
         );
+    }
+
+    if (isOwnerId(member?.id)) {
+        embed.addFields({
+            name: '👑 Chỉ Owner: quản lý staff và kênh',
+            value: [
+                '`/staff add|remove|list`: thêm / bớt / xem staff. `/staff role`: đặt role Staff.',
+                '`/config set|clear|show`: đặt kênh legit, vouch, stock, ticket, sold, bill, transcript... không cần sửa biến Railway.',
+                '`/config legit_count so`: chỉnh số legit hiện tại (vd 632) và đổi tên kênh legit.',
+                '`/set_kenhsold danhmuc`: chọn danh mục chứa kênh tài khoản đã bán.'
+            ].join('\n')
+        });
     }
 
     return embed.setFooter({ text: 'Drew Store AutoBuy' });

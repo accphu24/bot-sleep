@@ -31,6 +31,9 @@ const { sendTranscript } = require('./utils/transcript');
 const { stickyCache } = require('./utils/cache');
 const { buildHelpEmbed } = require('./utils/help');
 const { buildLeaderboardPayload, refreshLeaderboardMessage } = require('./commands/leaderboard');
+const { cfg, getExtraStaff } = require('./utils/runtime');
+const { loadConfig } = require('./utils/config');
+const { scheduleLegitRename } = require('./utils/legit');
 
 const EPHEMERAL = MessageFlags.Ephemeral;
 
@@ -60,15 +63,6 @@ for (const file of commandFiles) {
 // ==========================================
 // HÀM TIỆN ÍCH
 // ==========================================
-function cleanEmojiForReact(raw) {
-    if (!raw) return null;
-    const trimmed = String(raw).trim();
-    if (!trimmed) return null;
-    const match = trimmed.match(/<(?:a)?:[a-zA-Z0-9_]+:([0-9]+)>/);
-    if (match) return match[1];
-    return trimmed;
-}
-
 function formatRef(val, placeholder) {
     if (!val || !String(val).trim()) return placeholder;
     const str = String(val).trim();
@@ -78,7 +72,7 @@ function formatRef(val, placeholder) {
 
 // Kênh để khách check legit / vouch (đọc từ .env, không còn gán cứng ID trong code)
 function vouchChannelRef() {
-    return formatRef(process.env.KENH_VOUCH || process.env.AUTOREACTER_VOUCH, '');
+    return formatRef(cfg('KENH_VOUCH') || cfg('AUTOREACTER_VOUCH'), '');
 }
 
 function soldEmbedDescription() {
@@ -101,8 +95,8 @@ function toSoldName(name) {
 }
 
 async function getSoldCategoryId() {
-    const id = (await db.getSetting('SOLD_CATEGORY_ID')) || process.env.SOLD_CATEGORY_ID;
-    return id && isValidSnowflake(String(id)) ? String(id).trim() : null;
+    const id = cfg('SOLD_CATEGORY_ID');
+    return id && isValidSnowflake(id) ? id : null;
 }
 
 // Trả về false nếu chắc chắn kênh đã bị xóa (mã 10003), true nếu còn hoặc không chắc
@@ -179,10 +173,10 @@ async function closeTicketChannel(channel, closedBy, delayMs = C.CLOSE_DELAY_MS)
 // GIAO THÔNG TIN TÀI KHOẢN QUA DM
 // ==========================================
 function buildCredentialsEmbed(account, creds, guild) {
-    const ytRef = formatRef(process.env.KENH_YOUTUBE, 'KENH_YOUTUBE');
-    const faRef = formatRef(process.env.KENH_2FA, 'KENH_2FA');
-    const lockRef = formatRef(process.env.KENH_LOCK, 'KENH_LOCK');
-    const vouchRef = formatRef(process.env.KENH_VOUCH, 'KENH_VOUCH');
+    const ytRef = formatRef(cfg('KENH_YOUTUBE'), 'KENH_YOUTUBE');
+    const faRef = formatRef(cfg('KENH_2FA'), 'KENH_2FA');
+    const lockRef = formatRef(cfg('KENH_LOCK'), 'KENH_LOCK');
+    const vouchRef = formatRef(cfg('KENH_VOUCH'), 'KENH_VOUCH');
 
     const targetUsername = account?.username || 'N/A';
     const capesDisplay = account?.capes && account.capes.trim() ? account.capes.trim() : 'None';
@@ -243,6 +237,7 @@ async function runVouchReminders() {
     const due = await db.getDueReminders(Date.now());
     for (const r of due) {
         try {
+            if (!(await db.claimReminder(r._id, r.nextAt))) continue;   // instance khác đã lấy lịch này
             const user = await client.users.fetch(r.buyerId).catch(() => null);
             if (user) {
                 const template = `+1 legit <@${r.sellerId || process.env.OWNER_ID}> mfa`;
@@ -287,7 +282,7 @@ async function reconcileOnStartup() {
 async function handleBuy(interaction) {
     const username = interaction.customId.replace('buy_acc_', '').toLowerCase();
     const ownerId = process.env.OWNER_ID;
-    const staffRoleId = process.env.STAFF_ROLE_ID;
+    const staffRoleId = cfg('STAFF_ROLE_ID');
 
     const existing = await db.getAccount(username);
     if (!existing) {
@@ -307,6 +302,16 @@ async function handleBuy(interaction) {
     }
 
     await interaction.deferReply({ flags: EPHEMERAL });
+
+    // Chống khóa kho: mỗi khách chỉ được mở tối đa N đơn chưa xác nhận cùng lúc (Staff/Owner không bị giới hạn)
+    if (!checkStaffOrOwner(interaction.member)) {
+        const maxOpen = parseInt(cfg('MAX_OPEN_TICKETS'), 10) || 2;
+        if ((await db.countOpenTicketsByBuyer(interaction.user.id)) >= maxOpen) {
+            return await interaction.editReply({
+                content: `⚠️ Bạn đang có **${maxOpen} đơn chưa hoàn tất**. Vui lòng hoàn tất hoặc nhờ staff đóng bớt ticket cũ trước khi mua thêm!`
+            });
+        }
+    }
 
     const cardChannelId = interaction.channelId || existing.cardChannelId;
     const cardMessageId = interaction.message?.id || existing.cardMessageId;
@@ -350,16 +355,24 @@ async function handleBuy(interaction) {
         if (isValidSnowflake(staffRoleId)) {
             permissionOverwrites.push({ id: staffRoleId.trim(), type: OverwriteType.Role, allow: rw });
         }
+        const alreadyAdded = new Set([buyer.id, client.user.id]);
         if (isValidSnowflake(sellerId)) {
             permissionOverwrites.push({ id: sellerId.trim(), type: OverwriteType.Member, allow: rw });
+            alreadyAdded.add(sellerId.trim());
+        }
+        // Staff thêm bằng /staff add cần thấy ticket để dùng .close
+        for (const staffUserId of getExtraStaff()) {
+            if (alreadyAdded.has(staffUserId) || staffUserId === ownerId?.trim()) continue;
+            permissionOverwrites.push({ id: staffUserId, type: OverwriteType.Member, allow: rw });
+            alreadyAdded.add(staffUserId);
         }
         if (isValidSnowflake(ownerId) && ownerId.trim() !== sellerId) {
             permissionOverwrites.push({ id: ownerId.trim(), type: OverwriteType.Member, allow: rw });
         }
 
         let parent = null;
-        if (isValidSnowflake(process.env.TICKET_CATEGORY_ID)) {
-            const cat = guild.channels.cache.get(process.env.TICKET_CATEGORY_ID.trim());
+        if (isValidSnowflake(cfg('TICKET_CATEGORY_ID'))) {
+            const cat = guild.channels.cache.get(cfg('TICKET_CATEGORY_ID'));
             if (cat) parent = cat.id;
         }
 
@@ -430,7 +443,8 @@ async function handleBuy(interaction) {
             .setDescription(
                 `Xin chào <@${buyer.id}>! Bạn đang tạo đơn mua tài khoản **${account.username}**.\n\n` +
                 `${qrInfoText}\n\n` +
-                `*Vui lòng thanh toán đúng số tiền và nội dung chuyển khoản trên, sau đó gửi ảnh bill tại kênh này!*`
+                `*Vui lòng thanh toán đúng số tiền và nội dung chuyển khoản trên, sau đó gửi ảnh bill tại kênh này!*\n` +
+                `*Staff/Owner gõ \`.close\` để đóng ticket.*`
             )
             .setFooter({ text: 'Drew Store AutoBuy • Vui lòng chờ người bán xác nhận' })
             .setTimestamp();
@@ -439,13 +453,11 @@ async function handleBuy(interaction) {
             try { embed.setImage(new URL(qrImageUrl).href); } catch (e) { /* bỏ qua URL lỗi */ }
         }
 
+        // Ticket chỉ đóng khi Staff/Owner gõ .close (không còn nút Close, khách không tự đóng được)
         const ticketRow = new ActionRowBuilder().addComponents(
             new ButtonBuilder()
                 .setCustomId(`ticket_confirm_${account.username.toLowerCase()}`)
-                .setLabel('Confirm').setEmoji('✅').setStyle(ButtonStyle.Success),
-            new ButtonBuilder()
-                .setCustomId(`ticket_close_${account.username.toLowerCase()}`)
-                .setLabel('Close').setEmoji('🔒').setStyle(ButtonStyle.Danger)
+                .setLabel('Confirm').setEmoji('✅').setStyle(ButtonStyle.Success)
         );
 
         await ticketChannel.send({
@@ -470,6 +482,41 @@ async function handleBuy(interaction) {
 }
 
 // ==========================================
+// HOÀN TẤT ĐƠN (chạy lại nhiều lần vẫn an toàn: không đánh dấu bán / cộng doanh thu trùng)
+// ==========================================
+async function settleTicket(ticket) {
+    const username = String(ticket.username).toLowerCase();
+    const buyerId = ticket.buyerId;
+
+    const soldAccount = await db.markAccountSold(username, { soldTo: buyerId });
+    const account = soldAccount || await db.getAccount(username);
+
+    const finalAmount = ticket.amount || parseAmount(account?.price) || 0;
+    let revenue = 'zero';
+    if (buyerId && finalAmount > 0) {
+        if (await db.markTicketRevenue(ticket._id)) {
+            try {
+                await db.recordCustomerPurchase(buyerId, finalAmount, 1);
+            } catch (err) {
+                await db.updateTicket(ticket._id, { revenueRecorded: false }).catch(() => null);   // cho phép thử lại
+                throw err;
+            }
+            refreshLeaderboardMessage(client).catch(() => null);
+            revenue = 'recorded';
+        } else {
+            revenue = 'already';
+        }
+    }
+    return { account, revenue };
+}
+
+const buildResendRow = (username) => new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+        .setCustomId(`ticket_resend_${username}`)
+        .setLabel('Gửi lại thông tin').setEmoji('📩').setStyle(ButtonStyle.Primary)
+);
+
+// ==========================================
 // INTERACTION: NÚT CONFIRM (chỉ chạy được đúng 1 lần cho mỗi đơn)
 // ==========================================
 async function handleConfirm(interaction) {
@@ -491,7 +538,8 @@ async function handleConfirm(interaction) {
 
     await interaction.deferReply();
 
-    // Khóa nguyên tử: bấm lần 2 (hoặc 2 người bấm cùng lúc) sẽ không làm gì cả
+    // Khóa nguyên tử: bấm lần 2 (hoặc 2 người bấm cùng lúc) sẽ không làm gì cả.
+    // Khóa xong ticket ở trạng thái delivery='pending' nên nếu có lỗi giữa chừng vẫn gửi lại / khôi phục được.
     const locked = await db.lockTicketConfirm(interaction.channelId, interaction.user.id);
     if (!locked) {
         return await interaction.editReply({ content: '⚠️ Đơn này đã được xác nhận trước đó, không thể xác nhận lại.' });
@@ -501,30 +549,34 @@ async function handleConfirm(interaction) {
     const buyerId = ticket.buyerId;
     const ownerId = process.env.OWNER_ID;
 
-    const soldAccount = await db.markAccountSold(username, { soldTo: buyerId });
-    const account = soldAccount || await db.getAccount(username);
-
-    // Ghi doanh thu
-    const finalAmount = ticket.amount || parseAmount(account?.price) || 0;
-    if (buyerId && finalAmount > 0) {
-        await db.recordCustomerPurchase(buyerId, finalAmount, 1);
-        refreshLeaderboardMessage(client).catch(() => null);
-    }
-
     // Giao thông tin đăng nhập. delivery: 'dm' | 'pending' (DM thất bại, còn lưu) | 'manual' (kho không có thông tin)
-    const buyerUser = buyerId ? await client.users.fetch(buyerId).catch(() => null) : null;
-    let creds = null;
+    let account = null;
+    let revenue = 'zero';
+    let delivery = 'pending';
     try {
-        creds = await db.getAccountCredentials(username);
+        ({ account, revenue } = await settleTicket(locked));
+
+        const buyerUser = buyerId ? await client.users.fetch(buyerId).catch(() => null) : null;
+        let creds = null;
+        try {
+            creds = await db.getAccountCredentials(username);
+        } catch (err) {
+            console.error('[LỖI GIẢI MÃ THÔNG TIN TÀI KHOẢN]:', err.message);
+        }
+        delivery = 'manual';
+        if (creds) {
+            delivery = (await sendCredentialsDM(buyerUser, account, creds, interaction.guild)) ? 'dm' : 'pending';
+        }
+        if (delivery === 'dm') await db.wipeCredentials(username);   // giao xong là xóa khỏi kho
+        await db.updateTicket(interaction.channelId, { delivery });
     } catch (err) {
-        console.error('[LỖI GIẢI MÃ THÔNG TIN TÀI KHOẢN]:', err.message);
+        console.error('[LỖI HOÀN TẤT ĐƠN]:', err);
+        await interaction.channel.send({
+            content: '⚠️ Đơn đã được khóa nhưng gặp lỗi khi hoàn tất. Staff bấm **Gửi lại thông tin** (hoặc gõ `.resend`) để bot làm tiếp phần còn lại.',
+            components: [buildResendRow(username)]
+        }).catch(() => null);
+        return await interaction.editReply({ content: `❌ Gặp lỗi khi hoàn tất đơn: ${err.message}. Hãy bấm **Gửi lại thông tin** để thử lại.` }).catch(() => null);
     }
-    let delivery = 'manual';
-    if (creds) {
-        delivery = (await sendCredentialsDM(buyerUser, account, creds, interaction.guild)) ? 'dm' : 'pending';
-    }
-    if (delivery === 'dm') await db.wipeCredentials(username);   // giao xong là xóa khỏi kho
-    await db.updateTicket(interaction.channelId, { delivery });
 
     const deliveryText = {
         dm: `Thông tin tài khoản đã được gửi trực tiếp qua tin nhắn riêng (DM) của <@${buyerId}> để bảo mật tuyệt đối!\n\n*Vui lòng kiểm tra hộp thư tin nhắn riêng (DMs) của bạn.*`,
@@ -532,23 +584,15 @@ async function handleConfirm(interaction) {
         manual: `Tài khoản này chưa có thông tin đăng nhập trong kho của bot, staff sẽ bàn giao trực tiếp cho <@${buyerId}>.`
     }[delivery];
 
-    const components = delivery === 'pending'
-        ? [new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId(`ticket_resend_${username}`)
-                .setLabel('Gửi lại thông tin').setEmoji('📩').setStyle(ButtonStyle.Primary)
-        )]
-        : [];
-
     await interaction.channel.send({
         content: buyerId ? `🎉 Chúc mừng <@${buyerId}> đã hoàn tất giao dịch!` : '🎉 Giao dịch hoàn tất!',
         embeds: [
             new EmbedBuilder()
                 .setTitle('✅ GIAO DỊCH THÀNH CÔNG')
                 .setColor(delivery === 'dm' ? '#00FF00' : '#FFAA00')
-                .setDescription(deliveryText)
+                .setDescription(deliveryText + '\n\n*Staff/Owner gõ `.close` để đóng ticket sau khi xong việc.*')
         ],
-        components
+        components: delivery === 'pending' ? [buildResendRow(username)] : []
     });
 
     // Cập nhật card thành SOLD + đổi tên ❌ + chuyển danh mục Sold
@@ -577,7 +621,7 @@ async function handleConfirm(interaction) {
     }
 
     // Gửi bill vào kênh BILL_ID
-    const billId = process.env.BILL_ID || process.env.BILL_Id;
+    const billId = cfg('BILL_ID') || process.env.BILL_Id;
     if (billId && isValidSnowflake(billId.trim())) {
         try {
             const billChannel = await client.channels.fetch(billId.trim()).catch(() => null);
@@ -612,12 +656,15 @@ async function handleConfirm(interaction) {
         }
     }
 
+    const doneText = {
+        dm: '✅ Đơn hàng đã được xác nhận thành công! Thông tin tài khoản đã gửi qua DMs.',
+        pending: '✅ Đã xác nhận đơn, nhưng **chưa gửi được DM** cho khách. Bấm **Gửi lại thông tin** khi khách đã bật DM.',
+        manual: '✅ Đã xác nhận đơn. Kho chưa có thông tin đăng nhập của tài khoản này, hãy bàn giao thủ công cho khách.'
+    }[delivery];
     await interaction.editReply({
-        content: {
-            dm: '✅ Đơn hàng đã được xác nhận thành công! Thông tin tài khoản đã gửi qua DMs.',
-            pending: '✅ Đã xác nhận đơn, nhưng **chưa gửi được DM** cho khách. Bấm **Gửi lại thông tin** khi khách đã bật DM.',
-            manual: '✅ Đã xác nhận đơn. Kho chưa có thông tin đăng nhập của tài khoản này, hãy bàn giao thủ công cho khách.'
-        }[delivery]
+        content: doneText + (revenue === 'zero'
+            ? '\n⚠️ Giá đơn không hợp lệ nên **chưa ghi doanh thu**. Hãy ghi bằng `/done` ở một kênh khác.'
+            : '')
     });
 
     // Nhắc vouch (lưu DB, tối đa 3 lần)
@@ -632,8 +679,37 @@ async function handleConfirm(interaction) {
 }
 
 // ==========================================
-// INTERACTION: NÚT GỬI LẠI THÔNG TIN (khi DM lần đầu thất bại)
+// GỬI LẠI THÔNG TIN (nút "Gửi lại thông tin" hoặc lệnh .resend)
 // ==========================================
+const RESEND_TEXT = {
+    dm_failed: '❌ Vẫn chưa gửi được DM cho khách. Hãy nhờ khách bật tin nhắn riêng rồi thử lại.',
+    no_creds: '⚠️ Kho không còn (hoặc không giải mã được) thông tin đăng nhập của tài khoản này. Hãy bàn giao thủ công cho khách.',
+    ok: '✅ Đã gửi lại thông tin cho khách qua DM.'
+};
+
+// Trả về 'ok' | 'dm_failed' | 'no_creds'. Làm nốt các bước dở dang (đánh dấu SOLD, ghi doanh thu) trước khi gửi.
+async function resendCredentials({ channel, guild, ticket }) {
+    const username = ticket.usernameLower || String(ticket.username || '').toLowerCase();
+    await settleTicket(ticket).catch(err => console.error('[LỖI HOÀN TẤT KHI GỬI LẠI]:', err.message));
+
+    const [account, buyerUser] = await Promise.all([
+        db.getAccount(username),
+        client.users.fetch(ticket.buyerId).catch(() => null)
+    ]);
+    let creds = null;
+    try { creds = await db.getAccountCredentials(username); } catch (err) { console.error('[LỖI GIẢI MÃ]:', err.message); }
+
+    if (!creds) {
+        await db.updateTicket(channel.id, { delivery: 'manual' });
+        return 'no_creds';
+    }
+    if (!(await sendCredentialsDM(buyerUser, account, creds, guild))) return 'dm_failed';
+
+    await db.wipeCredentials(username);
+    await db.updateTicket(channel.id, { delivery: 'dm' });
+    return 'ok';
+}
+
 async function handleResend(interaction) {
     const ticket = await db.getTicket(interaction.channelId);
     const isSeller = ticket && interaction.user.id === ticket.sellerId;
@@ -645,47 +721,62 @@ async function handleResend(interaction) {
     }
 
     await interaction.deferReply({ flags: EPHEMERAL });
-    const username = ticket.usernameLower;
-    const [account, creds, buyerUser] = await Promise.all([
-        db.getAccount(username),
-        db.getAccountCredentials(username).catch(() => null),
-        client.users.fetch(ticket.buyerId).catch(() => null)
-    ]);
+    const result = await resendCredentials({ channel: interaction.channel, guild: interaction.guild, ticket });
+    if (result !== 'ok') return await interaction.editReply({ content: RESEND_TEXT[result] });
 
-    if (!(await sendCredentialsDM(buyerUser, account, creds, interaction.guild))) {
-        return await interaction.editReply({ content: '❌ Vẫn chưa gửi được DM cho khách. Hãy nhờ khách bật tin nhắn riêng rồi thử lại.' });
-    }
-
-    await db.wipeCredentials(username);
-    await db.updateTicket(interaction.channelId, { delivery: 'dm' });
-    await interaction.message.edit({ components: [] }).catch(() => null);
+    await interaction.message?.edit({ components: [] }).catch(() => null);
     await interaction.channel.send({ content: `✅ Đã gửi thông tin tài khoản cho <@${ticket.buyerId}> qua DM.` }).catch(() => null);
-    await interaction.editReply({ content: '✅ Đã gửi lại thông tin cho khách qua DM.' });
+    await interaction.editReply({ content: RESEND_TEXT.ok });
+}
+
+async function handleResendCommand(message) {
+    const ticket = await db.getTicket(message.channel.id);
+    if (!ticket) return;
+    const isSeller = message.author.id === ticket.sellerId;
+    if (!checkStaffOrOwner(message.member) && !isSeller) {
+        return await message.reply({ content: '❌ Bạn không có quyền thực hiện thao tác này!' }).catch(() => null);
+    }
+    if (!ticket.confirmed || ticket.delivery !== 'pending') {
+        return await message.reply({ content: 'ℹ️ Không còn thông tin nào cần gửi lại cho đơn này.' }).catch(() => null);
+    }
+    const result = await resendCredentials({ channel: message.channel, guild: message.guild, ticket });
+    if (result === 'ok') {
+        await message.channel.send({ content: `✅ Đã gửi thông tin tài khoản cho <@${ticket.buyerId}> qua DM.` }).catch(() => null);
+    } else {
+        await message.reply({ content: RESEND_TEXT[result] }).catch(() => null);
+    }
 }
 
 // ==========================================
-// INTERACTION: NÚT CLOSE
+// ĐÓNG TICKET: CHỈ Staff / Owner (gõ .close trong kênh ticket)
 // ==========================================
-async function handleClose(interaction) {
-    const ticket = await db.getTicket(interaction.channelId);
-    const isOwner = isOwnerId(interaction.user.id);
-    const isSeller = ticket && interaction.user.id === ticket.sellerId;
-
-    if (!checkStaffOrOwner(interaction.member) && !isSeller) {
-        return await interaction.reply({
-            content: '❌ **Từ chối:** Bạn không có quyền đóng đơn hàng này! (Chỉ Staff, Owner hoặc Seller)',
-            flags: EPHEMERAL
-        });
+async function checkCanClose({ channelId, userId, member }) {
+    const ticket = await db.getTicket(channelId);
+    if (!ticket) return { ok: false, msg: 'ℹ️ Kênh này không phải ticket đang mở.' };
+    if (!checkStaffOrOwner(member)) {
+        return { ok: false, msg: '❌ **Từ chối:** Chỉ Staff hoặc Owner mới được đóng ticket (gõ `.close`).' };
     }
-
     // Chưa giao được thông tin cho khách thì không cho đóng (tránh mất tài khoản đã bán). Owner được đóng cưỡng bức.
-    if (ticket?.confirmed && ticket.delivery === 'pending' && !isOwner) {
-        return await interaction.reply({
-            content: '⚠️ Chưa gửi được thông tin tài khoản cho khách! Hãy bấm **Gửi lại thông tin** hoặc bàn giao thủ công trước khi đóng (Owner có thể đóng cưỡng bức).',
-            flags: EPHEMERAL
-        });
+    if (ticket.confirmed && ticket.delivery === 'pending' && !isOwnerId(userId)) {
+        return {
+            ok: false,
+            msg: '⚠️ Chưa gửi được thông tin tài khoản cho khách! Hãy bấm **Gửi lại thông tin** (hoặc gõ `.resend`) hoặc bàn giao thủ công trước khi đóng (Owner có thể đóng cưỡng bức).'
+        };
     }
+    return { ok: true };
+}
 
+async function handleCloseCommand(message) {
+    const check = await checkCanClose({ channelId: message.channel.id, userId: message.author.id, member: message.member });
+    if (!check.ok) return await message.reply({ content: check.msg }).catch(() => null);
+    await message.channel.send({ content: '🔒 Kênh ticket này đã được đóng và sẽ xoá sau 5 giây...' }).catch(() => null);
+    await closeTicketChannel(message.channel, message.author);
+}
+
+// Nút Close cũ (ticket tạo từ bản trước còn nút này): cùng quy tắc, chỉ Staff/Owner
+async function handleClose(interaction) {
+    const check = await checkCanClose({ channelId: interaction.channelId, userId: interaction.user.id, member: interaction.member });
+    if (!check.ok) return await interaction.reply({ content: check.msg, flags: EPHEMERAL });
     await interaction.reply({ content: '🔒 Kênh ticket này đã được đóng và sẽ xoá sau 5 giây...' });
     await closeTicketChannel(interaction.channel, interaction.user);
 }
@@ -695,10 +786,18 @@ async function handleClose(interaction) {
 // ==========================================
 // Lệnh slash chỉ dành cho Owner/Staff
 const STAFF_RESTRICTED_COMMANDS = ['restock', 'leaderboard', 'set_qr', 'skin', 'done', 'stock', 'add_acc', 'sticky'];
+// Lệnh chỉ Owner dùng được
+const OWNER_ONLY_COMMANDS = ['staff', 'config', 'set_kenhsold'];
 
 async function handleInteraction(interaction) {
     try {
         if (interaction.isChatInputCommand()) {
+            if (OWNER_ONLY_COMMANDS.includes(interaction.commandName) && !isOwnerId(interaction.user?.id)) {
+                return await interaction.reply({
+                    content: '❌ **Từ chối:** Lệnh này chỉ dành riêng cho Owner!',
+                    flags: EPHEMERAL
+                });
+            }
             if (STAFF_RESTRICTED_COMMANDS.includes(interaction.commandName) && !checkStaffOrOwner(interaction.member)) {
                 return await interaction.reply({
                     content: '❌ **Từ chối:** Bạn không có quyền sử dụng lệnh này! (Yêu cầu vai trò Staff hoặc Owner)',
@@ -725,20 +824,19 @@ async function handleInteraction(interaction) {
                     });
                 }
 
-                const existing = await db.getAccount(parsed.username);
-                if (existing?.status === 'PROCESSING') {
-                    return await interaction.reply({
-                        content: '⏳ Tài khoản này đang có đơn giao dịch, không thể nạp lại thông tin lúc này!',
-                        flags: EPHEMERAL
-                    });
-                }
-
-                await db.upsertAccount({
+                // Kiểm tra PROCESSING nằm ngay trong câu lệnh ghi (nguyên tử), không có khoảng hở để bán trùng
+                const saved = await db.upsertAccount({
                     username: parsed.username,
                     capes: parsed.capes,
                     sellerId: interaction.user.id,
                     status: 'AVAILABLE'
                 }, parsed.credentials);
+                if (!saved) {
+                    return await interaction.reply({
+                        content: '⏳ Tài khoản này đang có đơn giao dịch, không thể nạp lại thông tin lúc này!',
+                        flags: EPHEMERAL
+                    });
+                }
 
                 await interaction.reply({
                     content: `✅ **Đã thêm tài khoản vào kho thành công!**\n` +
@@ -795,6 +893,12 @@ async function handleInteraction(interaction) {
     } catch (error) {
         if (error.code === 10062 || error.code === 40060) return;
         console.error('[LỖI INTERACTION]:', error);
+        // Luôn báo lại cho người dùng thay vì để họ thấy "ứng dụng không phản hồi"
+        try {
+            const msg = { content: '❌ Đã xảy ra lỗi khi xử lý thao tác này. Vui lòng thử lại hoặc báo staff.', flags: EPHEMERAL };
+            if (interaction.deferred || interaction.replied) await interaction.followUp(msg);
+            else await interaction.reply(msg);
+        } catch { /* không phản hồi được thì thôi */ }
     }
 }
 
@@ -803,38 +907,34 @@ async function handleInteraction(interaction) {
 // ==========================================
 const stickyState = new Map();
 
-// Đếm legit: thả chữ LEGIT + số thứ tự bằng emoji
-async function reactLegit(message) {
-    const count = await db.nextLegitNumber(C.LEGIT_START);
-
-    const letterEmojis = ['EMOJI_L', 'EMOJI_E', 'EMOJI_G', 'EMOJI_I', 'EMOJI_T', 'EMOJI_DIVIDER']
-        .map(name => cleanEmojiForReact(process.env[name])).filter(Boolean);
-
-    const digits = '0123456789'.split('');
-    const customDigits = Object.fromEntries(digits.map(d => [d, cleanEmojiForReact(process.env[`EMOJI_${d}`])]));
-    const altDigits = Object.fromEntries(digits.map(d => [d, cleanEmojiForReact(process.env[`EMOJI_${d}_ALT`])]));
-
-    const usedInMsg = new Set();
-    const numberEmojis = [];
-    for (const char of String(count)) {
-        let emojiToUse = customDigits[char];
-        if (!emojiToUse || usedInMsg.has(emojiToUse)) {
-            emojiToUse = altDigits[char] || (char === '0' ? '0️⃣' : `${char}️⃣`);
-        }
-        if (emojiToUse) {
-            usedInMsg.add(emojiToUse);
-            numberEmojis.push(emojiToUse);
-        }
+// Chống spam kênh legit: 1 người chỉ được đếm 1 lần / LEGIT_COOLDOWN_SEC giây
+const legitCooldown = new Map();
+function onLegitCooldown(userId) {
+    const waitMs = C.LEGIT_COOLDOWN_SEC * 1000;
+    if (!waitMs) return false;
+    const last = legitCooldown.get(userId) || 0;
+    if (Date.now() - last < waitMs) return true;
+    legitCooldown.set(userId, Date.now());
+    if (legitCooldown.size > 5000) {
+        for (const [id, t] of legitCooldown) if (Date.now() - t > waitMs) legitCooldown.delete(id);
     }
+    return false;
+}
 
-    for (const emojiItem of [...letterEmojis, ...numberEmojis]) {
+// Đếm legit: +1 vào bộ đếm, thả 3 emoji vào tin legit, rồi đổi tên kênh thành 『✅』𝙇𝙀𝙂𝙄𝙏-<số>
+async function reactLegit(message) {
+    const number = await db.nextLegitNumber(C.LEGIT_START);
+
+    for (const emoji of C.LEGIT_REACTIONS) {
         try {
-            await message.react(emojiItem);
+            await message.react(emoji);
             await new Promise(r => setTimeout(r, 200));
         } catch (err) {
-            console.warn(`[AUTOREACTER_VOUCH] Không thể thả emoji ${emojiItem}:`, err.message);
+            console.warn(`[LEGIT] Không thể thả emoji ${emoji} (bot cần ở server chứa emoji này):`, err.message);
         }
     }
+
+    scheduleLegitRename(message.channel, number);
 }
 
 // Staff/Owner gõ "sold" trong kênh bán hàng. Trả về true nếu đã xử lý.
@@ -844,7 +944,7 @@ async function handleSoldMessage(message) {
     const channel = message.channel;
     const account = await db.findAccountByCardChannel(channel.id);
     const channelHasMark = /[✅⌛]/u.test(channel.name || '');
-    const inStockCategory = isValidSnowflake(process.env.STOCK_ID) && channel.parentId === process.env.STOCK_ID.trim();
+    const inStockCategory = isValidSnowflake(cfg('STOCK_ID')) && channel.parentId === cfg('STOCK_ID');
 
     // Chỉ xử lý ở kênh bán hàng: tránh gõ "sold" nhầm ở kênh khác làm kênh đó bị chuyển danh mục
     if (!account && !channelHasMark && !inStockCategory) return false;
@@ -896,24 +996,18 @@ async function handleMessage(message) {
     try {
         if (!message.guild || message.author.bot) return;
 
-        // 1. Khách đã nhận hàng nhắn "legit" trong ticket => lưu transcript rồi đóng ticket.
-        //    (Chỉ khi tin nhắn thật sự là lời legit/vouch, không xóa kênh khi khách hỏi bảo hành.)
+        // 1. Lệnh trong ticket: .close (CHỈ Staff/Owner) và .resend. Ticket không bao giờ tự đóng.
         if (db.isTicketChannel(message.channel.id)) {
-            const ticket = await db.getTicket(message.channel.id);
-            if (ticket && ticket.confirmed && ticket.buyerId === message.author.id &&
-                ticket.delivery !== 'pending' && /legit|vouch/i.test(message.content)) {
-                await db.clearRemindersForBuyer(message.author.id);
-                await message.channel.send({ content: `<@${message.author.id}> đã legit` }).catch(() => null);
-                await closeTicketChannel(message.channel, null, C.AUTO_CLOSE_DELAY_MS);
-                return;
-            }
+            const cmd = message.content.trim().toLowerCase();
+            if (cmd === '.close') return await handleCloseCommand(message);
+            if (cmd === '.resend') return await handleResendCommand(message);
         }
 
-        // 2. Kênh legit: chỉ đếm tin đúng mẫu "+1 legit <@người_bán> ..."
-        const vouchChannelId = (process.env.AUTOREACTER_VOUCH || '').trim();
-        if (vouchChannelId && message.channel.id === vouchChannelId && C.LEGIT_PATTERN.test(message.content)) {
+        // 2. Kênh legit: chỉ đếm tin đúng mẫu "+1 legit <@người_bán> ...". Mỗi lần: +1, react 3 emoji, đổi tên kênh.
+        const legitChannelId = cfg('AUTOREACTER_VOUCH');
+        if (legitChannelId && message.channel.id === legitChannelId && C.LEGIT_PATTERN.test(message.content)) {
             await db.clearRemindersForBuyer(message.author.id);   // khách đã vouch thì ngừng nhắc
-            await reactLegit(message);
+            if (!onLegitCooldown(message.author.id)) await reactLegit(message);
         }
 
         // 3. Lệnh tin nhắn "sold"
@@ -1070,6 +1164,7 @@ function assertConfig() {
 async function main() {
     assertConfig();
     await db.connect();
+    await loadConfig();
     for (const s of await db.getSettingsWithPrefix('STICKY_')) {
         stickyCache.set(s._id.slice('STICKY_'.length), s.value);
     }
@@ -1087,5 +1182,5 @@ if (require.main === module) {
 
 module.exports = {
     client, handleInteraction, handleMessage, handleCancelTicket, closeTicketChannel,
-    runVouchReminders, reconcileOnStartup, toSoldName, toPendingName, toAvailableName
+    runVouchReminders, reconcileOnStartup, resendCredentials, toSoldName, toPendingName, toAvailableName
 };

@@ -1,3 +1,5 @@
+const { cfg, isExtraStaff } = require('./runtime');
+
 const isValidSnowflake = (id) => typeof id === 'string' && /^\d{17,20}$/.test(id.trim());
 
 function isOwnerId(userId) {
@@ -5,12 +7,12 @@ function isOwnerId(userId) {
     return isValidSnowflake(ownerId) && String(userId) === ownerId.trim();
 }
 
-// Owner hoặc có role Staff
+// Owner, hoặc có role Staff, hoặc được Owner thêm bằng /staff add
 function checkStaffOrOwner(member) {
     if (!member) return false;
-    const staffRoleId = process.env.STAFF_ROLE_ID;
-    const isStaff = isValidSnowflake(staffRoleId) && Boolean(member.roles?.cache?.has(staffRoleId.trim()));
-    return isOwnerId(member.id) || isStaff;
+    const staffRoleId = cfg('STAFF_ROLE_ID');
+    const hasRole = isValidSnowflake(staffRoleId) && Boolean(member.roles?.cache?.has(staffRoleId));
+    return isOwnerId(member.id) || hasRole || isExtraStaff(member.id);
 }
 
 module.exports = { isValidSnowflake, isOwnerId, checkStaffOrOwner };

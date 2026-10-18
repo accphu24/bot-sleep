@@ -59,19 +59,27 @@ async function findAccountByCardChannel(channelId) {
 }
 
 // fields: thông tin hiển thị (username, capes, price, status...). credentials: object thông tin đăng nhập (sẽ được mã hóa).
+// Khi đặt status AVAILABLE: KHÔNG BAO GIỜ ghi đè tài khoản đang PROCESSING (đang có đơn). Trả về null nếu đang có đơn.
 async function upsertAccount(fields, credentials = null) {
     if (!fields || !fields.username) return null;
+    const id = key(fields.username);
     const set = { ...fields, updatedAt: now() };
-    const update = { $set: set, $setOnInsert: { createdAt: now() } };
-
     if (credentials && Object.values(credentials).some(Boolean)) {
         set.credentials = encryptJSON(credentials);
         set.hasCredentials = true;
-    } else {
-        update.$setOnInsert.hasCredentials = false;
     }
-    await col('accounts').updateOne({ _id: key(fields.username) }, update, { upsert: true });
-    return key(fields.username);
+
+    // 1) tài khoản đã có và KHÔNG đang PROCESSING: cập nhật
+    const updated = await col('accounts').updateOne({ _id: id, status: { $ne: 'PROCESSING' } }, { $set: set });
+    if (updated.matchedCount > 0) return id;
+
+    // 2) chưa có: tạo mới. Nếu đang PROCESSING thì $setOnInsert không làm gì cả (không ghi đè)
+    const created = await col('accounts').updateOne(
+        { _id: id },
+        { $setOnInsert: { hasCredentials: false, ...set, createdAt: now() } },
+        { upsert: true }
+    );
+    return created.upsertedCount > 0 ? id : null;
 }
 
 async function updateAccount(username, patch) {
@@ -192,9 +200,23 @@ async function getTicketByUsername(username) {
 async function lockTicketConfirm(channelId, userId) {
     return col('tickets').findOneAndUpdate(
         { _id: String(channelId), confirmed: { $ne: true } },
-        { $set: { confirmed: true, confirmedAt: now(), confirmedBy: String(userId) } },
+        { $set: { confirmed: true, delivery: 'pending', confirmedAt: now(), confirmedBy: String(userId) } },
         { returnDocument: 'after' }
     );
+}
+
+// Ghi doanh thu của ticket đúng 1 lần: trả về ticket nếu vừa đánh dấu, null nếu đã ghi trước đó
+async function markTicketRevenue(channelId) {
+    return col('tickets').findOneAndUpdate(
+        { _id: String(channelId), revenueRecorded: { $ne: true } },
+        { $set: { revenueRecorded: true } },
+        { returnDocument: 'after' }
+    );
+}
+
+async function countOpenTicketsByBuyer(buyerId) {
+    const list = await col('tickets').find({ buyerId: String(buyerId), confirmed: { $ne: true } }).toArray();
+    return list.length;
 }
 
 // ==========================================
@@ -261,6 +283,15 @@ async function getDueReminders(nowMs = Date.now(), limit = 50) {
     return col('reminders').find({ nextAt: { $lte: nowMs } }).limit(limit).toArray();
 }
 
+// Giành quyền xử lý 1 lịch nhắc (chống 2 instance cùng nhắc 1 lần). Trả về null nếu instance khác đã lấy.
+async function claimReminder(id, expectedNextAt, lockMs = 120_000) {
+    return col('reminders').findOneAndUpdate(
+        { _id: id, nextAt: expectedNextAt },
+        { $set: { nextAt: Date.now() + lockMs } },
+        { returnDocument: 'after' }
+    );
+}
+
 async function advanceReminder(id, count, nextAt) {
     await col('reminders').updateOne({ _id: id }, { $set: { count, nextAt } });
 }
@@ -279,8 +310,8 @@ module.exports = {
     getAccount, findAccounts, findAccountByCardChannel, upsertAccount, updateAccount,
     claimAccount, releaseAccount, markAccountSold, getAccountCredentials, wipeCredentials,
     getStaffQR, saveStaffQR,
-    getTicket, isTicketChannel, saveTicket, updateTicket, deleteTicket, listTickets, getTicketByUsername, lockTicketConfirm,
+    getTicket, isTicketChannel, saveTicket, updateTicket, deleteTicket, listTickets, getTicketByUsername, lockTicketConfirm, markTicketRevenue, countOpenTicketsByBuyer,
     getSetting, saveSetting, getSettingsWithPrefix, nextLegitNumber,
     recordCustomerPurchase, getTopCustomers,
-    scheduleVouchReminder, getDueReminders, advanceReminder, deleteReminder, clearRemindersForBuyer
+    scheduleVouchReminder, getDueReminders, claimReminder, advanceReminder, deleteReminder, clearRemindersForBuyer
 };

@@ -8,7 +8,8 @@ const SOLD_CAT = '333333333333333333', STOCK_CAT = '444444444444444444', LEGIT_C
 Object.assign(process.env, {
     DISCORD_TOKEN: 'x', CLIENT_ID: '1', OWNER_ID: OWNER, STAFF_ROLE_ID: STAFF_ROLE,
     MONGODB_URI: 'mongodb://fake', DATA_ENCRYPTION_KEY: 'khoa-test-khoa-test-khoa-test-123',
-    SOLD_CATEGORY_ID: SOLD_CAT, STOCK_ID: STOCK_CAT, AUTOREACTER_VOUCH: LEGIT_CH, KENH_VOUCH: LEGIT_CH
+    SOLD_CATEGORY_ID: SOLD_CAT, STOCK_ID: STOCK_CAT, AUTOREACTER_VOUCH: LEGIT_CH, KENH_VOUCH: LEGIT_CH,
+    MAX_OPEN_TICKETS: '50', LEGIT_COOLDOWN_SEC: '0'
 });
 delete process.env.TRANSCRIPT_ID;
 
@@ -23,6 +24,9 @@ const { parseAmount, formatPriceDisplay } = require(path.join(root, 'utils/money
 const { encryptJSON, decryptJSON } = require(path.join(root, 'utils/crypto'));
 const { parseAccountForm } = require(path.join(root, 'utils/accountForm'));
 const { Collection } = require('discord.js');
+const runtime = require(path.join(root, 'utils/runtime'));
+const legitUtil = require(path.join(root, 'utils/legit'));
+const C = require(path.join(root, 'utils/constants'));
 
 const results = [];
 async function test(name, fn) {
@@ -115,6 +119,13 @@ async function buy(name, buyerId, cardCh, cardMsg) {
     return it;
 }
 const staffMember = () => makeMember(SELLER, [STAFF_ROLE]);
+const msgFor = (channel, authorId, content, member) => {
+    const m = { guild, author: { id: authorId, bot: false }, member: member || makeMember(authorId), channel, content,
+        reacts: [], replies: [], deleted: false, mentions: { users: { first: () => null } },
+        async react(e) { m.reacts.push(e); }, async reply(x) { m.replies.push(x); }, async delete() { m.deleted = true; } };
+    return m;
+};
+
 
 (async () => {
     await db.connect();
@@ -135,6 +146,15 @@ const staffMember = () => makeMember(SELLER, [STAFF_ROLE]);
         const tampered = enc.slice(0, -3) + (enc.endsWith('AAA') ? 'BBB' : 'AAA');
         assert.throws(() => decryptJSON(tampered));
     });
+    await test('mã hóa v2 (scrypt) và vẫn đọc được dữ liệu v1 cũ', () => {
+        assert.ok(encryptJSON({ a: 1 }).startsWith('v2.'));
+        const nodeCrypto = require('crypto');
+        const iv = nodeCrypto.randomBytes(12);
+        const c = nodeCrypto.createCipheriv('aes-256-gcm', nodeCrypto.createHash('sha256').update(process.env.DATA_ENCRYPTION_KEY).digest(), iv);
+        const enc = Buffer.concat([c.update(JSON.stringify({ old: 'v1' }), 'utf8'), c.final()]);
+        const v1 = ['v1', iv.toString('base64url'), c.getAuthTag().toString('base64url'), enc.toString('base64url')].join('.');
+        assert.deepEqual(decryptJSON(v1), { old: 'v1' });
+    });
     await test('parseAccountForm tách thông tin đăng nhập, không giữ nguyên văn', () => {
         const p = parseAccountForm('Username: Foo\nCapes: <:a:1>\nPassword: pw\nPrimary Email: x@y.z\nSecret Key: sk');
         assert.equal(p.username, 'Foo');
@@ -147,6 +167,7 @@ const staffMember = () => makeMember(SELLER, [STAFF_ROLE]);
     await test('mọi lệnh nạp được và toJSON() không lỗi', () => {
         for (const cmd of client.commands.values()) assert.ok(cmd.data.toJSON().name);
         assert.ok(client.commands.has('sticky') && client.commands.has('done'));
+        assert.ok(client.commands.has('staff') && client.commands.has('config'));
     });
 
     console.log('\n[3] Tên kênh');
@@ -260,9 +281,9 @@ const staffMember = () => makeMember(SELLER, [STAFF_ROLE]);
         assert.equal((await db.getTicket(ticketCh.id)).delivery, 'pending');
         assert.ok(await db.getAccountCredentials('dm1'), 'credential phải còn để gửi lại');
 
-        const close = buttonInteraction({ customId: 'ticket_close_dm1', user: { id: SELLER }, member: staffMember(), channel: ticketCh });
-        await index.handleInteraction(close);
-        assert.ok(lastText(close).includes('Chưa gửi được thông tin'));
+        const close = msgFor(ticketCh, SELLER, '.close', staffMember());
+        await index.handleMessage(close);
+        assert.ok(JSON.stringify(close.replies).includes('Chưa gửi được thông tin'));
         assert.equal(ticketCh.deleted, false);
 
         const still = buttonInteraction({ customId: 'ticket_resend_dm1', user: { id: SELLER }, member: staffMember(), channel: ticketCh, message: { edit: async () => {} } });
@@ -282,8 +303,9 @@ const staffMember = () => makeMember(SELLER, [STAFF_ROLE]);
         const { cardCh, cardMsg } = await seedAccount('close1');
         await buy('close1', '800000000000000001', cardCh, cardMsg);
         const ticketCh = guild.channels.created.at(-1).ch;
-        const it = buttonInteraction({ customId: 'ticket_close_close1', user: { id: SELLER }, member: staffMember(), channel: ticketCh });
-        await index.handleInteraction(it);
+        const closeMsg = msgFor(ticketCh, SELLER, '.close', staffMember());
+        await index.handleMessage(closeMsg);
+        await new Promise(r => setTimeout(r, 20));
         assert.equal((await db.getAccount('close1')).status, 'AVAILABLE');
         assert.equal(await db.getTicket(ticketCh.id), null);
         assert.ok(cardMsg.edits.at(-1).components[0].components[0].data.custom_id.startsWith('buy_acc_'));
@@ -304,28 +326,54 @@ const staffMember = () => makeMember(SELLER, [STAFF_ROLE]);
         assert.equal((await db.getAccount('stuck1')).status, 'AVAILABLE');
     });
 
-    console.log('\n[8] Tin nhắn: auto-đóng ticket, kênh legit, sold');
-    const msgFor = (channel, authorId, content, member) => {
-        const m = { guild, author: { id: authorId, bot: false }, member: member || makeMember(authorId), channel, content,
-            reacts: [], replies: [], deleted: false, mentions: { users: { first: () => null } },
-            async react(e) { m.reacts.push(e); }, async reply(x) { m.replies.push(x); }, async delete() { m.deleted = true; } };
-        return m;
-    };
-    await test('khách nhắn tin bình thường sau khi mua: KHÔNG xóa ticket; nhắn "legit": xóa', async () => {
+    console.log('\n[8] Ticket chỉ đóng bằng .close, kênh legit, sold');
+    await test('khách nhắn "legit" trong ticket: KHÔNG bị đóng; khách gõ .close bị từ chối; staff gõ .close thì đóng', async () => {
         const buyer = users.get('800000000000000001');
         const { cardCh, cardMsg } = await seedAccount('auto1');
         await buy('auto1', buyer.id, cardCh, cardMsg);
         const ticketCh = guild.channels.created.at(-1).ch;
         await index.handleInteraction(buttonInteraction({ customId: 'ticket_confirm_auto1', user: { id: SELLER }, member: staffMember(), channel: ticketCh }));
 
-        await index.handleMessage(msgFor(ticketCh, buyer.id, 'tài khoản đăng nhập bị lỗi, giúp mình với'));
+        for (const text of ['shop này legit không?', '+1 legit mfa', 'vouch nhé']) {
+            await index.handleMessage(msgFor(ticketCh, buyer.id, text));
+        }
         assert.ok(await db.getTicket(ticketCh.id), 'ticket phải còn');
+        assert.equal(ticketCh.deleted, false);
 
-        await index.handleMessage(msgFor(ticketCh, buyer.id, '+1 legit mfa'));
-        assert.equal(await db.getTicket(ticketCh.id), null, 'ticket phải bị đóng sau khi legit');
-        assert.ok(JSON.stringify(ticketCh.sent).includes('đã legit'));
+        const byBuyer = msgFor(ticketCh, buyer.id, '.close');
+        await index.handleMessage(byBuyer);
+        assert.ok(JSON.stringify(byBuyer.replies).includes('Chỉ Staff hoặc Owner'));
+        assert.ok(await db.getTicket(ticketCh.id), 'khách không đóng được ticket');
+
+        await index.handleMessage(msgFor(ticketCh, SELLER, '.close', staffMember()));
+        assert.equal(await db.getTicket(ticketCh.id), null, 'staff .close thì ticket bị đóng');
+        await new Promise(r => setTimeout(r, C.CLOSE_DELAY_MS + 50));
+        assert.equal(ticketCh.deleted, true);
     });
-    await test('kênh legit: chỉ đếm đúng mẫu "+1 legit <@id>", số tăng 800 -> 801', async () => {
+    await test('ticket giao thủ công (manual): khách nói "legit" cũng không mất kênh', async () => {
+        const buyer = users.get('800000000000000001');
+        const { cardCh, cardMsg } = await seedAccount('manual1');
+        await db.wipeCredentials('manual1');
+        await buy('manual1', buyer.id, cardCh, cardMsg);
+        const ticketCh = guild.channels.created.at(-1).ch;
+        await index.handleInteraction(buttonInteraction({ customId: 'ticket_confirm_manual1', user: { id: SELLER }, member: staffMember(), channel: ticketCh }));
+        assert.equal((await db.getTicket(ticketCh.id)).delivery, 'manual');
+        await index.handleMessage(msgFor(ticketCh, buyer.id, 'legit không shop?'));
+        assert.ok(await db.getTicket(ticketCh.id));
+    });
+    await test('Owner đóng cưỡng bức được khi DM chưa gửi; staff thường thì không', async () => {
+        const buyer = makeUser('800000000000000004', { dmFails: true });
+        const { cardCh, cardMsg } = await seedAccount('force1');
+        await buy('force1', buyer.id, cardCh, cardMsg);
+        const ticketCh = guild.channels.created.at(-1).ch;
+        await index.handleInteraction(buttonInteraction({ customId: 'ticket_confirm_force1', user: { id: SELLER }, member: staffMember(), channel: ticketCh }));
+        await index.handleMessage(msgFor(ticketCh, SELLER, '.close', staffMember()));
+        assert.ok(await db.getTicket(ticketCh.id), 'staff bị chặn');
+        await index.handleMessage(msgFor(ticketCh, OWNER, '.close', makeMember(OWNER)));
+        assert.equal(await db.getTicket(ticketCh.id), null, 'owner đóng được');
+    });
+    await test('kênh legit: đúng mẫu thì +1, react đúng 3 emoji, đổi tên 『✅』𝙇𝙀𝙂𝙄𝙏-<số>', async () => {
+        legitUtil.resetLegitRenameState();
         const legitCh = makeChannel('legit', { id: LEGIT_CH });
         const a = msgFor(legitCh, '800000000000000001', 'chào mọi người');
         await index.handleMessage(a);
@@ -333,10 +381,32 @@ const staffMember = () => makeMember(SELLER, [STAFF_ROLE]);
 
         const b = msgFor(legitCh, '800000000000000001', `+1 legit <@${SELLER}> mfa`);
         await index.handleMessage(b);
-        assert.ok(b.reacts.includes('8️⃣') && b.reacts.includes('0️⃣'));
+        assert.deepEqual(b.reacts, [
+            '<a:CanhXanh:1556987445437014116>',
+            '<:minecraft_accept:1556987449996218409>',
+            '<a:CanhXanh:1541014174312828968>'
+        ]);
+        assert.equal(legitCh.name, '『✅』𝙇𝙀𝙂𝙄𝙏-633');
+
         const c = msgFor(legitCh, '800000000000000002', `+1 legit <@${SELLER}> acc`);
         await index.handleMessage(c);
-        assert.ok(c.reacts.includes('8️⃣') && c.reacts.includes('1️⃣'));
+        assert.equal(c.reacts.length, 3);
+        // lần 2 nằm trong khoảng giãn cách đổi tên: chưa đổi ngay (tránh bị Discord giới hạn), nhưng đã nhớ số mới nhất
+        assert.equal(legitCh.name, '『✅』𝙇𝙀𝙂𝙄𝙏-633');
+        assert.equal(await db.getSetting('LEGIT_COUNT'), 635, 'bộ đếm tăng đúng +1 mỗi lần');
+        legitUtil.scheduleLegitRename(legitCh, 634, { force: true });
+        assert.equal(legitCh.name, '『✅』𝙇𝙀𝙂𝙄𝙏-634');
+    });
+    await test('chống spam kênh legit: cùng 1 người gửi liên tiếp chỉ đếm 1 lần', async () => {
+        const old = C.LEGIT_COOLDOWN_SEC; C.LEGIT_COOLDOWN_SEC = 60;
+        const legitCh = registry.get(LEGIT_CH);
+        const before = await db.getSetting('LEGIT_COUNT');
+        const m1 = msgFor(legitCh, '800000000000000077', `+1 legit <@${SELLER}> a`);
+        const m2 = msgFor(legitCh, '800000000000000077', `+1 legit <@${SELLER}> b`);
+        await index.handleMessage(m1); await index.handleMessage(m2);
+        C.LEGIT_COOLDOWN_SEC = old;
+        assert.equal(m1.reacts.length, 3); assert.equal(m2.reacts.length, 0);
+        assert.equal(await db.getSetting('LEGIT_COUNT'), before + 1);
     });
     await test('legit xong thì lịch nhắc vouch của khách bị hủy', async () => {
         const buyer = users.get('800000000000000002');
@@ -412,6 +482,136 @@ const staffMember = () => makeMember(SELLER, [STAFF_ROLE]);
         const it = { isChatInputCommand: () => true, commandName: 'sticky', member: makeMember('800000000000000001'), replies: [], async reply(x) { this.replies.push(x); } };
         await index.handleInteraction(it);
         assert.ok(JSON.stringify(it.replies).includes('Từ chối'));
+    });
+
+
+    console.log('\n[10] Sửa lỗi: giới hạn đơn, upsert không ghi đè PROCESSING, khôi phục khi Confirm lỗi, nhắc vouch nguyên tử');
+    await test('mỗi khách chỉ mở được tối đa MAX_OPEN_TICKETS đơn chưa xác nhận (staff không bị giới hạn)', async () => {
+        process.env.MAX_OPEN_TICKETS = '2';
+        const greedy = '800000000000000020';
+        makeUser(greedy);
+        const outs = [];
+        for (const n of ['lim1', 'lim2', 'lim3']) {
+            const { cardCh, cardMsg } = await seedAccount(n);
+            outs.push(await buy(n, greedy, cardCh, cardMsg));
+        }
+        process.env.MAX_OPEN_TICKETS = '50';
+        assert.ok(lastText(outs[2]).includes('chưa hoàn tất'));
+        assert.equal((await db.getAccount('lim3')).status, 'AVAILABLE', 'đơn bị từ chối không được giữ chỗ');
+        assert.equal((await db.getAccount('lim1')).status, 'PROCESSING');
+    });
+    await test('upsertAccount không ghi đè tài khoản đang PROCESSING (không bán trùng khi đăng lại card / nạp lại)', async () => {
+        await seedAccount('guard1');
+        await db.claimAccount('guard1', {});
+        assert.equal(await db.upsertAccount({ username: 'guard1', price: '1', status: 'AVAILABLE' }), null);
+        assert.equal((await db.getAccount('guard1')).status, 'PROCESSING');
+        assert.equal(await db.upsertAccount({ username: 'brandnew1', price: '1', status: 'AVAILABLE' }), 'brandnew1');
+        assert.equal(await db.upsertAccount({ username: 'brandnew1', price: '2', status: 'AVAILABLE' }), 'brandnew1');
+    });
+    await test('Confirm lỗi giữa chừng: đơn không bị kẹt, .resend làm nốt (SOLD, doanh thu đúng 1 lần, gửi DM)', async () => {
+        const buyer = makeUser('800000000000000005');
+        const { cardCh, cardMsg } = await seedAccount('crash1');
+        await buy('crash1', buyer.id, cardCh, cardMsg);
+        const ticketCh = guild.channels.created.at(-1).ch;
+
+        const original = db.recordCustomerPurchase;
+        db.recordCustomerPurchase = async () => { throw new Error('mongo down'); };
+        const it = buttonInteraction({ customId: 'ticket_confirm_crash1', user: { id: SELLER }, member: staffMember(), channel: ticketCh });
+        await index.handleInteraction(it);
+        db.recordCustomerPurchase = original;
+
+        assert.ok(lastText(it).includes('Gửi lại thông tin'));
+        const t = await db.getTicket(ticketCh.id);
+        assert.equal(t.confirmed, true); assert.equal(t.delivery, 'pending');
+        assert.ok(JSON.stringify(ticketCh.sent).includes('ticket_resend_crash1'), 'phải có nút gửi lại');
+        assert.equal(buyer.dms.length, 0);
+
+        const cmd = msgFor(ticketCh, SELLER, '.resend', staffMember());
+        await index.handleMessage(cmd);
+        assert.equal(buyer.dms.length, 1);
+        assert.equal((await db.getAccount('crash1')).status, 'SOLD');
+        assert.equal((await db.getTicket(ticketCh.id)).delivery, 'dm');
+        const me = (await db.getTopCustomers(50)).find(c => c._id === buyer.id);
+        assert.equal(me.totalSpent, 190000); assert.equal(me.totalOrders, 1);
+
+        await index.handleMessage(msgFor(ticketCh, SELLER, '.resend', staffMember()));
+        assert.equal(buyer.dms.length, 1, 'gửi lại lần 2 không được DM trùng');
+        assert.equal((await db.getTopCustomers(50)).find(c => c._id === buyer.id).totalOrders, 1);
+    });
+    await test('nhắc vouch: 2 instance chạy cùng lúc chỉ nhắc 1 lần', async () => {
+        const u = makeUser('800000000000000030');
+        await db.scheduleVouchReminder({ channelId: 'dup1', buyerId: u.id, sellerId: SELLER, username: 'x' }, -1000);
+        await Promise.all([index.runVouchReminders(), index.runVouchReminders()]);
+        assert.equal(u.dms.length, 1);
+    });
+
+    console.log('\n[11] Quản lý Staff và kênh (Owner)');
+    const mkCmd = (name, sub, { user = OWNER, opts = {} } = {}) => ({
+        isChatInputCommand: () => true, commandName: name, user: { id: user, bot: false }, member: makeMember(user), client,
+        replies: [], edits: [],
+        options: {
+            getSubcommand: () => sub,
+            getUser: () => opts.user, getRole: () => opts.role, getChannel: () => opts.channel,
+            getString: () => opts.str, getInteger: () => opts.int
+        },
+        async reply(x) { this.replies.push(x); }, async deferReply() {}, async editReply(x) { this.edits.push(x); }
+    });
+    await test('/staff chỉ Owner dùng được; add/remove có hiệu lực ngay và được lưu DB', async () => {
+        const target = { id: '800000000000000040', bot: false };
+        const denied = mkCmd('staff', 'add', { user: SELLER, opts: { user: target } });
+        await index.handleInteraction(denied);
+        assert.ok(JSON.stringify(denied.replies).includes('chỉ dành riêng cho Owner'));
+        assert.equal(runtime.isExtraStaff(target.id), false);
+
+        const { checkStaffOrOwner } = require(path.join(root, 'utils/permissions'));
+        assert.equal(checkStaffOrOwner(makeMember(target.id)), false);
+        await index.handleInteraction(mkCmd('staff', 'add', { opts: { user: target } }));
+        assert.equal(checkStaffOrOwner(makeMember(target.id)), true);
+        assert.deepEqual(await db.getSetting('STAFF_USERS'), [target.id]);
+
+        await index.handleInteraction(mkCmd('staff', 'remove', { opts: { user: target } }));
+        assert.equal(checkStaffOrOwner(makeMember(target.id)), false);
+    });
+    await test('/staff add: staff mới đóng được ticket bằng .close', async () => {
+        const target = { id: '800000000000000041', bot: false };
+        await index.handleInteraction(mkCmd('staff', 'add', { opts: { user: target } }));
+        const { cardCh, cardMsg } = await seedAccount('extra1');
+        await buy('extra1', '800000000000000001', cardCh, cardMsg);
+        const created = guild.channels.created.at(-1);
+        assert.ok(created.opts.permissionOverwrites.some(o => o.id === target.id), 'ticket phải cấp quyền cho staff mới');
+        await index.handleMessage(msgFor(created.ch, target.id, '.close', makeMember(target.id)));
+        assert.equal(await db.getTicket(created.ch.id), null);
+        await index.handleInteraction(mkCmd('staff', 'remove', { opts: { user: target } }));
+    });
+    await test('/config: đặt / xóa kênh ghi đè biến môi trường, chỉ Owner; legit_count đổi tên kênh', async () => {
+        const NEW_BILL = '666666666666666666';
+        const denied = mkCmd('config', 'set', { user: SELLER, opts: { str: 'BILL_ID', channel: { id: NEW_BILL } } });
+        await index.handleInteraction(denied);
+        assert.ok(JSON.stringify(denied.replies).includes('chỉ dành riêng cho Owner'));
+
+        assert.equal(runtime.cfg('BILL_ID'), '');
+        await index.handleInteraction(mkCmd('config', 'set', { opts: { str: 'BILL_ID', channel: { id: NEW_BILL } } }));
+        assert.equal(runtime.cfg('BILL_ID'), NEW_BILL);
+        assert.equal(await db.getSetting('CFG_BILL_ID'), NEW_BILL);
+        await index.handleInteraction(mkCmd('config', 'clear', { opts: { str: 'BILL_ID' } }));
+        assert.equal(runtime.cfg('BILL_ID'), '');
+
+        legitUtil.resetLegitRenameState();
+        const legitCh = registry.get(LEGIT_CH);
+        await index.handleInteraction(mkCmd('config', 'legit_count', { opts: { int: 632 } }));
+        assert.equal(legitCh.name, '『✅』𝙇𝙀𝙂𝙄𝙏-632');
+        assert.equal(await db.getSetting('LEGIT_COUNT'), 633);
+    });
+    await test('loadConfig nạp lại cấu hình + staff từ DB sau khi khởi động lại', async () => {
+        const { loadConfig } = require(path.join(root, 'utils/config'));
+        await db.saveSetting('CFG_KENH_2FA', '123456789012345678');
+        await db.saveSetting('STAFF_USERS', ['800000000000000050']);
+        await loadConfig();
+        assert.equal(runtime.cfg('KENH_2FA'), '123456789012345678');
+        assert.equal(runtime.isExtraStaff('800000000000000050'), true);
+        await db.saveSetting('CFG_KENH_2FA', null); await db.saveSetting('STAFF_USERS', null);
+        await loadConfig();
+        assert.equal(runtime.cfg('KENH_2FA'), '');
     });
 
     const failed = results.filter(r => !r[0]).length;

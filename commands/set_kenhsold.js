@@ -1,5 +1,6 @@
 const { SlashCommandBuilder, ChannelType, MessageFlags } = require('discord.js');
-const { saveSetting } = require('../utils/db');
+const { isOwnerId } = require('../utils/permissions');
+const { setConfig } = require('../utils/config');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -12,10 +13,7 @@ module.exports = {
                 .setRequired(true)),
 
     async execute(interaction) {
-        const ownerId = process.env.OWNER_ID;
-        const staffRoleId = process.env.STAFF_ROLE_ID;
-
-        const isOwner = ownerId && interaction.user.id === ownerId;
+        const isOwner = isOwnerId(interaction.user.id);
 
         if (!isOwner) {
             return await interaction.reply({
@@ -25,7 +23,7 @@ module.exports = {
         }
 
         const category = interaction.options.getChannel('danhmuc');
-        await saveSetting('SOLD_CATEGORY_ID', category.id);
+        await setConfig('SOLD_CATEGORY_ID', category.id);
 
         await interaction.reply({
             content: `✅ **Đã cài đặt danh mục lưu trữ kênh đã bán thành công!**\n` +

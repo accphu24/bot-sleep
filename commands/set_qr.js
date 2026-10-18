@@ -1,5 +1,7 @@
 const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const { saveStaffQR } = require('../utils/db');
+const { checkStaffOrOwner } = require('../utils/permissions');
+const { BANK_MAP } = require('../utils/vietqr');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -19,41 +21,15 @@ module.exports = {
                 .setRequired(true)),
 
     async execute(interaction) {
-        const ownerId = process.env.OWNER_ID;
-        const staffRoleId = process.env.STAFF_ROLE_ID;
-
-        const isOwner = interaction.user.id === ownerId;
-        const isStaff = staffRoleId && interaction.member?.roles?.cache?.has(staffRoleId);
-
-        if (!isOwner && !isStaff) {
-            return await interaction.reply({ 
-                content: '❌ Bạn không có quyền sử dụng lệnh này (Chỉ dành cho Staff hoặc Owner)!', 
-                flags: MessageFlags.Ephemeral 
+        if (!checkStaffOrOwner(interaction.member)) {
+            return await interaction.reply({
+                content: '❌ Bạn không có quyền sử dụng lệnh này (Chỉ dành cho Staff hoặc Owner)!',
+                flags: MessageFlags.Ephemeral
             });
         }
 
         let bankName = interaction.options.getString('bank_name').trim().toUpperCase().replace(/\s+/g, '');
-        const bankMap = {
-            'MBBANK': 'MB',
-            'VIETCOMBANK': 'VCB',
-            'VIETINBANK': 'ICB',
-            'TECHCOMBANK': 'TCB',
-            'BIDV': 'BIDV',
-            'VPBANK': 'VPB',
-            'TPBANK': 'TPB',
-            'ACB': 'ACB',
-            'SACOMBANK': 'STB',
-            'HDBANK': 'HDB',
-            'SHB': 'SHB',
-            'VIB': 'VIB',
-            'MSB': 'MSB',
-            'OCB': 'OCB',
-            'SEABANK': 'SEAB',
-            'LPBANK': 'LPB'
-        };
-        if (bankMap[bankName]) {
-            bankName = bankMap[bankName];
-        }
+        if (BANK_MAP[bankName]) bankName = BANK_MAP[bankName];
 
         const accountNumber = interaction.options.getString('account_number').trim().replace(/\s+/g, '');
         const bankType = interaction.options.getString('bank_type').trim();

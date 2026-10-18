@@ -1,6 +1,6 @@
 {
   "name": "drew-autobuy",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Bot Discord bán tài khoản Minecraft: card, ticket, VietQR, giao hàng qua DM",
   "main": "index.js",
   "engines": { "node": ">=18" },

@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, MessageFlags } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, MessageFlags } = require('discord.js');
 const db = require('../utils/db');
 const { parseAmount, formatVND } = require('../utils/money');
 const { checkStaffOrOwner } = require('../utils/permissions');
@@ -8,7 +8,6 @@ module.exports = {
     data: new SlashCommandBuilder()
         .setName('done')
         .setDescription('Ghi nhận giao dịch thành công cho khách hàng')
-        .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels)
         .addUserOption(opt =>
             opt.setName('customer')
                 .setDescription('Khách hàng đã mua hàng')
