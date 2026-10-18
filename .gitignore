@@ -1,0 +1,10 @@
+# Bí mật và dữ liệu khách hàng: KHÔNG được đưa lên GitHub
+.env
+.env.*
+!.env.example
+data/
+kho.json
+*.log
+
+# Cài bằng `npm install` trên máy chủ
+node_modules/
