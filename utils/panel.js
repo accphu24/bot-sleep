@@ -73,7 +73,7 @@ async function handlePanelButton(interaction, client) {
     }
 
     const ownerId = process.env.OWNER_ID;
-    const staffRoleId = cfg('STAFF_ROLE_ID');
+    const staffRoleId = cfg('STAFF_ROLE_ID', guild);
     const rw = [
         PermissionFlagsBits.ViewChannel,
         PermissionFlagsBits.SendMessages,
@@ -96,8 +96,8 @@ async function handlePanelButton(interaction, client) {
     }
 
     let parent = null;
-    if (isValidSnowflake(cfg('TICKET_CATEGORY_ID'))) {
-        const cat = guild.channels.cache.get(cfg('TICKET_CATEGORY_ID'));
+    if (isValidSnowflake(cfg('TICKET_CATEGORY_ID', guild))) {
+        const cat = guild.channels.cache.get(cfg('TICKET_CATEGORY_ID', guild));
         if (cat) parent = cat.id;
     }
 

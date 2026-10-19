@@ -23,12 +23,12 @@ module.exports = {
         }
 
         const category = interaction.options.getChannel('danhmuc');
-        await setConfig('SOLD_CATEGORY_ID', category.id);
+        await setConfig('SOLD_CATEGORY_ID', category.id, interaction.guildId);
 
         await interaction.reply({
             content: `✅ **Đã cài đặt danh mục lưu trữ kênh đã bán thành công!**\n` +
                      `📁 **Danh mục:** **${category.name}** (\`${category.id}\`)\n` +
-                     `*Khi một tài khoản được bán (nhắn \`sold\` hoặc Confirm ticket), kênh đó sẽ tự động được chuyển vào danh mục này!*`,
+                     `*Chỉ áp dụng cho server này. Khi một tài khoản được bán (nhắn \`sold\` hoặc Confirm ticket), kênh đó sẽ tự động được chuyển vào danh mục này!*`,
             flags: MessageFlags.Ephemeral
         });
     }

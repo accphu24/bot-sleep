@@ -8,18 +8,18 @@ const { legitName, scheduleLegitRename } = require('../utils/legit');
 const { diagnoseGuild, formatDiagnosis } = require('../utils/diagnostics');
 
 const choices = CONFIG_KEYS.map(k => ({ name: k.name, value: k.value }));
-const SOURCE_TEXT = { db: '(đặt bằng /config)', env: '(từ biến môi trường)', none: '' };
+const SOURCE_TEXT = { guild: '', db: '(giá trị chung cũ, hãy `/config set` lại cho server này)', env: '(từ biến môi trường)', none: '' };
 
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('config')
-        .setDescription('Owner: quản lý kênh / danh mục của bot')
-        .addSubcommand(sub => sub.setName('set').setDescription('Đặt kênh hoặc danh mục cho một mục')
+        .setDescription('Owner: quản lý kênh / danh mục của bot (mỗi server một cấu hình riêng)')
+        .addSubcommand(sub => sub.setName('set').setDescription('Đặt kênh hoặc danh mục cho một mục (chỉ áp dụng cho server này)')
             .addStringOption(o => o.setName('muc').setDescription('Mục cần đặt').setRequired(true).addChoices(...choices))
             .addChannelOption(o => o.setName('kenh').setDescription('Kênh hoặc danh mục').setRequired(true)))
-        .addSubcommand(sub => sub.setName('clear').setDescription('Xóa cài đặt bằng lệnh (quay về biến môi trường)')
+        .addSubcommand(sub => sub.setName('clear').setDescription('Xóa cài đặt của một mục trong server này')
             .addStringOption(o => o.setName('muc').setDescription('Mục cần xóa').setRequired(true).addChoices(...choices)))
-        .addSubcommand(sub => sub.setName('show').setDescription('Xem cấu hình hiện tại'))
+        .addSubcommand(sub => sub.setName('show').setDescription('Xem cấu hình của server này'))
         .addSubcommand(sub => sub.setName('check_emoji').setDescription('Kiểm tra 3 emoji legit và quyền của bot trong kênh legit'))
         .addSubcommand(sub => sub.setName('debug').setDescription('Chẩn đoán server này: kênh legit, quyền, emoji, role mốc và hoạt động legit gần nhất'))
         .addSubcommand(sub => sub.setName('legit_dem').setDescription('Bật / tắt đếm số legit cho server này (tắt = chỉ react emoji)')
@@ -34,6 +34,9 @@ module.exports = {
             return await interaction.reply({ content: '❌ Lệnh này chỉ dành riêng cho Owner!', flags: MessageFlags.Ephemeral });
         }
         const sub = interaction.options.getSubcommand();
+        if (['set', 'clear', 'show'].includes(sub) && !interaction.guildId) {
+            return await interaction.reply({ content: '❌ Cấu hình riêng từng server, hãy dùng lệnh này trong server cần cấu hình.', flags: MessageFlags.Ephemeral });
+        }
         const label = (value) => (CONFIG_KEYS.find(k => k.value === value) || {}).name || value;
 
         if (sub === 'set') {
@@ -49,19 +52,18 @@ module.exports = {
             }
             // Kênh legit lưu RIÊNG theo server (mỗi server 1 kênh legit), không ghi đè mục chung của server khác
             if (key === 'AUTOREACTER_VOUCH') await setLegitChannel(channel.guildId || interaction.guildId, channel.id);
-            else await setConfig(key, channel.id);
+            else await setConfig(key, channel.id, interaction.guildId);
             return await interaction.reply({
-                content: `✅ Đã đặt **${label(key)}** = <#${channel.id}> (\`${channel.id}\`)`, flags: MessageFlags.Ephemeral
+                content: `✅ Đã đặt **${label(key)}** = <#${channel.id}> (\`${channel.id}\`) · chỉ áp dụng cho server **${interaction.guild?.name || interaction.guildId}**`, flags: MessageFlags.Ephemeral
             });
         }
 
         if (sub === 'clear') {
             const key = interaction.options.getString('muc');
             if (key === 'AUTOREACTER_VOUCH') { if (interaction.guildId) await setLegitChannel(interaction.guildId, null); }
-            else await setConfig(key, null);
-            const fallback = key === 'AUTOREACTER_VOUCH' ? '' : cfg(key);
+            else await setConfig(key, null, interaction.guildId);
             return await interaction.reply({
-                content: `✅ Đã xóa cài đặt **${label(key)}**.` + (fallback ? ` Đang dùng giá trị biến môi trường: <#${fallback}>` : ' Hiện chưa có giá trị nào.'),
+                content: `✅ Đã xóa cài đặt **${label(key)}** của server này (server khác không bị ảnh hưởng).`,
                 flags: MessageFlags.Ephemeral
             });
         }
@@ -137,11 +139,12 @@ module.exports = {
 
         // show
         const lines = CONFIG_KEYS.map(k => {
-            const v = k.value === 'AUTOREACTER_VOUCH' ? legitChannelFor(interaction.guildId) : cfg(k.value);
-            return `• **${k.name}**: ${v ? `<#${v}> ${SOURCE_TEXT[cfgSource(k.value)]}` : '*(chưa đặt)*'}`;
+            const isLegit = k.value === 'AUTOREACTER_VOUCH';
+            const v = isLegit ? legitChannelFor(interaction.guildId) : cfg(k.value, interaction.guild);
+            return `• **${k.name}**: ${v ? `<#${v}> ${isLegit ? '' : SOURCE_TEXT[cfgSource(k.value, interaction.guild)]}` : '*(chưa đặt)*'}`;
         });
         const embed = new EmbedBuilder()
-            .setTitle('⚙️ Cấu hình kênh của bot')
+            .setTitle(`⚙️ Cấu hình kênh của bot · ${interaction.guild?.name || 'server này'}`)
             .setColor('#00FFAA')
             .setDescription(lines.join('\n') + `\n• **Đếm số legit (server này)**: ${isLegitEnabled(interaction.guildId) ? '🟢 Bật' : '🔴 Tắt'}`)
             .setFooter({ text: `Tên kênh legit: ${C.LEGIT_CHANNEL_PREFIX}<số>` });

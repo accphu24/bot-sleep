@@ -8,20 +8,55 @@ const legitEnabled = new Map();
 // Kênh legit theo ID server (đặt bằng /config set muc:Kênh legit). Chưa đặt thì dùng biến AUTOREACTER_VOUCH làm dự phòng.
 const legitChannels = new Map();
 
-function cfg(name) {
+// Cấu hình THEO TỪNG SERVER: khóa lưu dạng "TÊN@guildId". Server chưa đặt thì dùng giá trị chung cũ (DB / biến môi trường)
+// NHƯNG chỉ khi kênh / role đó thực sự thuộc server này, nên server A không bao giờ "mượn" kênh của server B.
+const NONE = '-';                       // đánh dấu "server này đã xóa mục này, không dùng giá trị chung"
+let guildResolver = null;               // (guildId) => Guild | undefined, đặt khi bot sẵn sàng
+const setGuildResolver = (fn) => { guildResolver = typeof fn === 'function' ? fn : null; };
+const gidOf = (g) => (g && typeof g === 'object') ? String(g.id || '') : (g ? String(g) : '');
+
+function existsInGuild(gid, value) {
+    if (!guildResolver) return true;
+    const g = guildResolver(gid);
+    if (!g || !g.channels?.cache) return true;      // không rõ thì chấp nhận
+    return Boolean(g.channels.cache.has(value) || g.roles?.cache?.has(value));
+}
+
+function sharedCfg(name) {
     const o = overrides.get(name);
     if (o !== undefined && o !== null && String(o).trim()) return String(o).trim();
     const e = process.env[name];
     return e && String(e).trim() ? String(e).trim() : '';
 }
 
-function cfgSource(name) {
-    const o = overrides.get(name);
-    if (o !== undefined && o !== null && String(o).trim()) return 'db';
-    const e = process.env[name];
-    return e && String(e).trim() ? 'env' : 'none';
+function cfg(name, guild) {
+    const gid = gidOf(guild);
+    if (gid) {
+        const g = overrides.get(`${name}@${gid}`);
+        if (g !== undefined && g !== null) {
+            const v = String(g).trim();
+            return v === NONE ? '' : v;
+        }
+    }
+    const v = sharedCfg(name);
+    if (gid && v && /^\d{17,20}$/.test(v) && !existsInGuild(gid, v)) return '';
+    return v;
 }
 
+// 'guild' = đặt riêng cho server này, 'db' = giá trị chung cũ, 'env' = biến môi trường, 'none' = chưa có
+function cfgSource(name, guild) {
+    const gid = gidOf(guild);
+    if (gid) {
+        const g = overrides.get(`${name}@${gid}`);
+        if (g !== undefined && g !== null) return String(g).trim() === NONE ? 'none' : 'guild';
+    }
+    if (!cfg(name, guild)) return 'none';
+    const o = overrides.get(name);
+    if (o !== undefined && o !== null && String(o).trim()) return 'db';
+    return 'env';
+}
+
+// name có thể là "TÊN" (chung cũ) hoặc "TÊN@guildId"
 const setOverride = (name, value) => {
     if (value === null || value === undefined || value === '') overrides.delete(name);
     else overrides.set(name, String(value));
@@ -58,4 +93,4 @@ const legitChannelFor = (guildId) => legitChannels.get(String(guildId)) || '';
 // Kênh này có phải kênh legit của server đó không: server đã cài kênh riêng thì chỉ kênh đó, chưa cài thì dùng biến AUTOREACTER_VOUCH
 const isLegitChannel = (guildId, channelId) => legitChannels.get(String(guildId)) === String(channelId);
 
-module.exports = { setLegitChannel, clearLegitChannels, getLegitChannelMap, legitChannelFor, isLegitChannel, isLegitEnabled, setLegitEnabled, clearLegitEnabled, cfg, cfgSource, setOverride, clearOverrides, getExtraOwners, isExtraOwner, setExtraOwners, getExtraStaff, isExtraStaff, setExtraStaff };
+module.exports = { setLegitChannel, clearLegitChannels, getLegitChannelMap, legitChannelFor, isLegitChannel, isLegitEnabled, setLegitEnabled, clearLegitEnabled, cfg, cfgSource, setOverride, setGuildResolver, clearOverrides, getExtraOwners, isExtraOwner, setExtraOwners, getExtraStaff, isExtraStaff, setExtraStaff };

@@ -62,7 +62,7 @@ module.exports = {
 
     async execute(interaction) {
         const ownerId = process.env.OWNER_ID;
-        const staffRoleId = cfg('STAFF_ROLE_ID');
+        const staffRoleId = cfg('STAFF_ROLE_ID', interaction.guild);
 
         if (!checkStaffOrOwner(interaction.member)) {
             return await interaction.reply({ 
@@ -155,7 +155,7 @@ module.exports = {
             const priceDisplay = formatPriceDisplay(price);
 
             // Xác định vị trí đăng
-            const stockId = cfg('STOCK_ID');
+            const stockId = cfg('STOCK_ID', interaction.guild);
             let targetChannel = interaction.channel;
             let isDifferentChannel = false;
 

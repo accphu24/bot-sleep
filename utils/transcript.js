@@ -34,7 +34,7 @@ async function buildTranscriptFile(channel, maxMessages = 2000) {
 
 // Gửi transcript vào kênh TRANSCRIPT_ID (nếu có cấu hình). Trả về true nếu đã gửi.
 async function sendTranscript(client, channel, { closedBy = null, note = '' } = {}) {
-    const logId = cfg('TRANSCRIPT_ID');
+    const logId = cfg('TRANSCRIPT_ID', channel.guild || channel.guildId);
     if (!isValidSnowflake(logId)) return false;
     const logChannel = await client.channels.fetch(logId).catch(() => null);
     if (!logChannel) return false;

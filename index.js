@@ -33,7 +33,7 @@ const { buildHelpEmbed } = require('./utils/help');
 const { isPanelButton, buildPanelPayload, handlePanelButton } = require('./utils/panel');
 const { buildLeaderboardPayload, refreshLeaderboardMessage } = require('./commands/leaderboard');
 const { processDone } = require('./commands/done');
-const { cfg, getExtraStaff, getExtraOwners, isLegitEnabled, isLegitChannel, getLegitChannelMap } = require('./utils/runtime');
+const { cfg, setGuildResolver, legitChannelFor, getExtraStaff, getExtraOwners, isLegitEnabled, isLegitChannel, getLegitChannelMap } = require('./utils/runtime');
 const { loadConfig, setLegitChannel } = require('./utils/config');
 const { scheduleLegitRename } = require('./utils/legit');
 const { log, errInfo, hint, trace } = require('./utils/logger');
@@ -77,19 +77,20 @@ function formatRef(val, placeholder) {
 }
 
 // Kênh để khách check legit / vouch (đọc từ .env, không còn gán cứng ID trong code)
-function vouchChannelRef() {
-    return formatRef(cfg('KENH_VOUCH') || cfg('AUTOREACTER_VOUCH'), '');
+function vouchChannelRef(guild) {
+    return formatRef(cfg('KENH_VOUCH', guild) || legitChannelFor(guild?.id || guild) || cfg('AUTOREACTER_VOUCH', guild), '');
 }
 
-function soldEmbedDescription() {
-    const ref = vouchChannelRef();
+function soldEmbedDescription(guild) {
+    const ref = vouchChannelRef(guild);
     return `## Acc đã được bán${ref ? ` check ${ref}` : ''} ${C.EMOJI_OFFLINE}`;
 }
 
 // Đổi tên kênh ở nền (Discord giới hạn 2 lần đổi tên / 10 phút, không để nó chặn luồng chính)
 function renameInBackground(channel, name) {
     if (!channel || !name || channel.name === name) return;
-    channel.setName(name).catch(() => null);
+    channel.setName(name).catch(err =>
+        log.warn('KENH', 'Không đổi được tên kênh', { channelId: channel.id, tu: channel.name, thanh: name, ...errInfo(err), goiy: hint(err) || 'Thiếu quyền Manage Channels, hoặc bị Discord giới hạn đổi tên 2 lần / 10 phút' }));
 }
 const toPendingName = (name) => name.replace(/✅/gu, '⌛');
 const toAvailableName = (name) => name.replace(/⌛/gu, '✅');
@@ -100,8 +101,8 @@ function toSoldName(name) {
     return `❌-${name}`;
 }
 
-async function getSoldCategoryId() {
-    const id = cfg('SOLD_CATEGORY_ID');
+async function getSoldCategoryId(guild) {
+    const id = cfg('SOLD_CATEGORY_ID', guild);
     return id && isValidSnowflake(id) ? id : null;
 }
 
@@ -179,10 +180,10 @@ async function closeTicketChannel(channel, closedBy, delayMs = C.CLOSE_DELAY_MS)
 // GIAO THÔNG TIN TÀI KHOẢN QUA DM
 // ==========================================
 function buildCredentialsEmbed(account, creds, guild) {
-    const ytRef = formatRef(cfg('KENH_YOUTUBE'), 'KENH_YOUTUBE');
-    const faRef = formatRef(cfg('KENH_2FA'), 'KENH_2FA');
-    const lockRef = formatRef(cfg('KENH_LOCK'), 'KENH_LOCK');
-    const vouchRef = formatRef(cfg('KENH_VOUCH'), 'KENH_VOUCH');
+    const ytRef = formatRef(cfg('KENH_YOUTUBE', guild), 'KENH_YOUTUBE');
+    const faRef = formatRef(cfg('KENH_2FA', guild), 'KENH_2FA');
+    const lockRef = formatRef(cfg('KENH_LOCK', guild), 'KENH_LOCK');
+    const vouchRef = formatRef(cfg('KENH_VOUCH', guild), 'KENH_VOUCH');
 
     const targetUsername = account?.username || 'N/A';
     const capesDisplay = account?.capes && account.capes.trim() ? account.capes.trim() : 'None';
@@ -288,7 +289,7 @@ async function reconcileOnStartup() {
 async function handleBuy(interaction) {
     const username = interaction.customId.replace('buy_acc_', '').toLowerCase();
     const ownerId = process.env.OWNER_ID;
-    const staffRoleId = cfg('STAFF_ROLE_ID');
+    const staffRoleId = cfg('STAFF_ROLE_ID', interaction.guild);
 
     const existing = await db.getAccount(username);
     if (!existing) {
@@ -311,7 +312,7 @@ async function handleBuy(interaction) {
 
     // Chống khóa kho: mỗi khách chỉ được mở tối đa N đơn chưa xác nhận cùng lúc (Staff/Owner không bị giới hạn)
     if (!checkStaffOrOwner(interaction.member)) {
-        const maxOpen = parseInt(cfg('MAX_OPEN_TICKETS'), 10) || 2;
+        const maxOpen = parseInt(cfg('MAX_OPEN_TICKETS', interaction.guild), 10) || 2;
         if ((await db.countOpenTicketsByBuyer(interaction.user.id)) >= maxOpen) {
             return await interaction.editReply({
                 content: `⚠️ Bạn đang có **${maxOpen} đơn chưa hoàn tất**. Vui lòng hoàn tất hoặc nhờ staff đóng bớt ticket cũ trước khi mua thêm!`
@@ -377,8 +378,8 @@ async function handleBuy(interaction) {
         }
 
         let parent = null;
-        if (isValidSnowflake(cfg('TICKET_CATEGORY_ID'))) {
-            const cat = guild.channels.cache.get(cfg('TICKET_CATEGORY_ID'));
+        if (isValidSnowflake(cfg('TICKET_CATEGORY_ID', guild))) {
+            const cat = guild.channels.cache.get(cfg('TICKET_CATEGORY_ID', guild));
             if (cat) parent = cat.id;
         }
 
@@ -618,7 +619,7 @@ async function handleConfirm(interaction) {
             const cardChannel = await setCardState(cardChannelId, cardMessageId, 'sold', username);
             if (cardChannel) {
                 if (/[✅⌛]/u.test(cardChannel.name || '')) renameInBackground(cardChannel, toSoldName(cardChannel.name));
-                const soldCatId = await getSoldCategoryId();
+                const soldCatId = await getSoldCategoryId(cardChannel.guild);
                 if (soldCatId) await cardChannel.setParent(soldCatId, { lockPermissions: false }).catch(() => null);
 
                 const soldEmbed = new EmbedBuilder()
@@ -626,7 +627,7 @@ async function handleConfirm(interaction) {
                         name: interaction.guild.name,
                         iconURL: interaction.guild.iconURL({ dynamic: true }) || undefined
                     })
-                    .setDescription(soldEmbedDescription())
+                    .setDescription(soldEmbedDescription(cardChannel.guild))
                     .setColor('#2b2d31');
                 await cardChannel.send({ embeds: [soldEmbed] }).catch(() => null);
             }
@@ -636,7 +637,7 @@ async function handleConfirm(interaction) {
     }
 
     // Gửi bill vào kênh BILL_ID
-    const billId = cfg('BILL_ID') || process.env.BILL_Id;
+    const billId = cfg('BILL_ID', interaction.guild) || process.env.BILL_Id;
     if (billId && isValidSnowflake(billId.trim())) {
         try {
             const billChannel = await client.channels.fetch(billId.trim()).catch(() => null);
@@ -1093,10 +1094,22 @@ async function handleSoldMessage(message) {
     const channel = message.channel;
     const account = await db.findAccountByCardChannel(channel.id);
     const channelHasMark = /[✅⌛]/u.test(channel.name || '');
-    const inStockCategory = isValidSnowflake(cfg('STOCK_ID')) && channel.parentId === cfg('STOCK_ID');
+    const inStockCategory = isValidSnowflake(cfg('STOCK_ID', message.guild)) && channel.parentId === cfg('STOCK_ID', message.guild);
+
+    const sctx = { guild: message.guild.name, guildId: message.guild.id, channelId: channel.id, kenh: channel.name, userId: message.author.id };
+    log.info('SOLD', 'Nhận lệnh sold', { ...sctx, co_tai_khoan: Boolean(account), kenh_co_dau: channelHasMark, trong_danh_muc_stock: inStockCategory, cha: channel.parentId || '(không có)', STOCK_ID: cfg('STOCK_ID', message.guild) || '(chưa đặt)', SOLD_CATEGORY_ID: cfg('SOLD_CATEGORY_ID', message.guild) || '(chưa đặt)' });
 
     // Chỉ xử lý ở kênh bán hàng: tránh gõ "sold" nhầm ở kênh khác làm kênh đó bị chuyển danh mục
-    if (!account && !channelHasMark && !inStockCategory) return false;
+    if (!account && !channelHasMark && !inStockCategory) {
+        log.warn('SOLD', 'Bỏ qua: kênh này không được nhận là kênh bán hàng', { ...sctx, goiy: 'Kênh phải có card tài khoản, hoặc tên có ✅/⌛, hoặc nằm trong danh mục STOCK_ID của server này (STOCK_ID đang là một giá trị chung cho mọi server)' });
+        const warnMsg = await message.reply({
+            content: '⚠️ Bot không nhận kênh này là kênh bán hàng nên **không xử lý `sold`**.\n' +
+                '• Kênh cần có card tài khoản bot đã đăng, hoặc tên kênh có ✅/⌛, hoặc nằm trong danh mục **Kho stock** (`/config set muc:Kho stock`).\n' +
+                `• Danh mục Kho stock đang đặt: ${cfg('STOCK_ID', message.guild) ? `<#${cfg('STOCK_ID', message.guild)}>` : '*(chưa đặt)*'} · kênh này đang nằm trong: ${channel.parentId ? `<#${channel.parentId}>` : '*(không có danh mục)*'}`
+        }).catch(() => null);
+        if (warnMsg) setTimeout(() => warnMsg.delete().catch(() => null), 30_000);
+        return true;
+    }
 
     const isOwner = isOwnerId(message.author.id);
     if (account?.sellerId && !isOwner && message.author.id !== account.sellerId) {
@@ -1106,10 +1119,33 @@ async function handleSoldMessage(message) {
         return true;
     }
 
+    const problems = [];
     renameInBackground(channel, toSoldName(channel.name));
 
-    const soldCatId = await getSoldCategoryId();
-    if (soldCatId) await channel.setParent(soldCatId, { lockPermissions: false }).catch(() => null);
+    const soldCatId = await getSoldCategoryId(message.guild);
+    if (!soldCatId) {
+        problems.push('Chưa đặt **danh mục Sold**: dùng `/config set muc:Danh mục chứa kênh đã bán kenh:<danh mục>`.');
+    } else {
+        const cat = await message.guild.channels.fetch(soldCatId).catch(() => null);
+        if (!cat) {
+            problems.push(`Danh mục Sold đang đặt (<#${soldCatId}>) **không thuộc server này** hoặc đã bị xóa. Hãy chạy \`/config set\` ngay trong server này.`);
+        } else if (cat.type !== ChannelType.GuildCategory) {
+            problems.push(`<#${soldCatId}> **không phải là danh mục (category)**, hãy chọn đúng danh mục chứa kênh đã bán.`);
+        } else if (channel.parentId !== cat.id) {
+            try {
+                await channel.setParent(cat.id, { lockPermissions: false });
+                log.info('SOLD', 'Đã chuyển kênh sang danh mục Sold', { ...sctx, danhmuc: cat.id });
+            } catch (err) {
+                log.error('SOLD', 'Chuyển kênh sang danh mục Sold THẤT BẠI', { ...sctx, danhmuc: cat.id, ...errInfo(err), goiy: hint(err) });
+                const full = err?.code === 50035 || /maximum number of channels/i.test(err?.message || '');
+                problems.push(
+                    err?.code === 50013 ? `Bot thiếu quyền **Manage Channels** ở kênh này hoặc ở danh mục ${cat.name}.`
+                        : full ? `Danh mục **${cat.name}** đã đầy (tối đa 50 kênh), hãy tạo thêm danh mục Sold mới và đặt lại bằng \`/config set\`.`
+                        : `Không chuyển được kênh sang **${cat.name}**: ${err?.message || 'lỗi không rõ'}`
+                );
+            }
+        }
+    }
 
     // Khóa nút trên card
     let accName = account?._id || null;
@@ -1134,10 +1170,14 @@ async function handleSoldMessage(message) {
             name: message.guild.name,
             iconURL: message.guild.iconURL({ dynamic: true }) || undefined
         })
-        .setDescription(soldEmbedDescription())
+        .setDescription(soldEmbedDescription(message.guild))
         .setColor('#2b2d31')
         .setTimestamp();
     await channel.send({ embeds: [soldEmbed] });
+    if (problems.length) {
+        const m = await channel.send({ content: `⚠️ Đã đánh dấu SOLD nhưng **chưa chuyển được kênh sang danh mục Sold**:\n${problems.map(x => `• ${x}`).join('\n')}` }).catch(() => null);
+        if (m) setTimeout(() => m.delete().catch(() => null), 60_000);
+    }
     return true;
 }
 
@@ -1412,6 +1452,7 @@ client.on(Events.ChannelDelete || 'channelDelete', async channel => {
 });
 
 client.once(Events.ClientReady || 'ready', async () => {
+    if (client.guilds?.cache) setGuildResolver(id => client.guilds.cache.get(id));   // cấu hình riêng từng server
     console.log(`🤖 Bot đã kết nối: ${client.user.tag}`);
     log.info('READY', 'Bot sẵn sàng', {
         bot: client.user.tag, so_server: client.guilds.cache.size, log_level: process.env.LOG_LEVEL || 'debug',

@@ -47,10 +47,10 @@ function parseChannelId(raw) {
 }
 
 // Tập các kênh / danh mục hệ thống của bot (không cho xóa bằng lệnh này)
-function getProtectedIds() {
+function getProtectedIds(guild) {
     const ids = new Set();
     for (const { value } of CONFIG_KEYS) {
-        const v = cfg(value);
+        const v = cfg(value, guild);
         if (v) ids.add(v);
     }
     return ids;
@@ -63,7 +63,7 @@ async function checkDeletable(channel) {
     if (channel.type === ChannelType.GuildCategory) {
         return { ok: false, msg: '❌ Lệnh này chỉ xóa **kênh**, không xóa danh mục.' };
     }
-    if (getProtectedIds().has(channel.id)) {
+    if (getProtectedIds(channel.guild || channel.guildId).has(channel.id)) {
         return { ok: false, msg: '❌ Đây là kênh hệ thống của bot (đã đặt trong `/config`), không xóa bằng lệnh này.' };
     }
 

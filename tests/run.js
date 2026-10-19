@@ -86,6 +86,9 @@ const guild = {
     }
 };
 
+// Danh mục Sold giả (thuộc server G) để bot kiểm tra được trước khi chuyển kênh
+registry.set(SOLD_CAT, { id: SOLD_CAT, name: 'Sold', type: require('discord.js').ChannelType.GuildCategory, guildId: 'G' });
+
 const index = require(path.join(root, 'index.js'));
 const { client } = index;
 client.user = botUser;
@@ -482,6 +485,28 @@ const msgFor = (channel, authorId, content, member) => {
         assert.ok(JSON.stringify(cardCh.sent).includes('Acc đã được bán'));
     });
 
+    await test('"sold": danh mục Sold không thuộc server / danh mục đầy -> vẫn đánh dấu SOLD và báo rõ lý do trong kênh', async () => {
+        const old = process.env.SOLD_CATEGORY_ID;
+        // (a) danh mục không tồn tại trong server này
+        process.env.SOLD_CATEGORY_ID = '999999999999999999';
+        runtime.clearOverrides();
+        const a = await seedAccount('sold2');
+        await index.handleMessage(msgFor(a.cardCh, SELLER, 'sold', staffMember()));
+        assert.equal(a.cardCh.parentSet, null);
+        assert.equal((await db.getAccount('sold2')).status, 'SOLD');
+        assert.ok(JSON.stringify(a.cardCh.sent).includes('không thuộc server này'), 'phải báo danh mục Sold không thuộc server');
+        // (b) danh mục đầy 50 kênh (Discord trả 50035)
+        process.env.SOLD_CATEGORY_ID = SOLD_CAT;
+        const b = await seedAccount('sold3');
+        b.cardCh.setParent = async () => { throw Object.assign(new Error('Maximum number of channels in category reached (50)'), { code: 50035 }); };
+        const logErr = console.error; console.error = () => {};
+        await index.handleMessage(msgFor(b.cardCh, SELLER, 'sold', staffMember()));
+        console.error = logErr;
+        assert.equal((await db.getAccount('sold3')).status, 'SOLD');
+        assert.ok(JSON.stringify(b.cardCh.sent).includes('đã đầy'), 'phải báo danh mục đầy');
+        process.env.SOLD_CATEGORY_ID = old;
+    });
+
     console.log('\n[9] Nhắc vouch (lưu DB, tối đa 3 lần) và /done');
     await test('nhắc vouch: gửi đúng 3 lần rồi dừng, không spam', async () => {
         const u = makeUser('800000000000000009');
@@ -726,12 +751,13 @@ const msgFor = (channel, authorId, content, member) => {
         await index.handleInteraction(denied);
         assert.ok(JSON.stringify(denied.replies).includes('chỉ dành riêng cho Owner'));
 
-        assert.equal(runtime.cfg('BILL_ID'), '');
+        assert.equal(runtime.cfg('BILL_ID', guild), '');
         await index.handleInteraction(mkCmd('config', 'set', { opts: { str: 'BILL_ID', channel: { id: NEW_BILL } } }));
-        assert.equal(runtime.cfg('BILL_ID'), NEW_BILL);
-        assert.equal(await db.getSetting('CFG_BILL_ID'), NEW_BILL);
+        assert.equal(runtime.cfg('BILL_ID', guild), NEW_BILL);
+        assert.equal(await db.getSetting('CFG_BILL_ID@' + guild.id), NEW_BILL);
+        assert.equal(runtime.cfg('BILL_ID', 'OTHER_GUILD'), '', 'server khác không thấy cấu hình này');
         await index.handleInteraction(mkCmd('config', 'clear', { opts: { str: 'BILL_ID' } }));
-        assert.equal(runtime.cfg('BILL_ID'), '');
+        assert.equal(runtime.cfg('BILL_ID', guild), '');
 
         legitUtil.resetLegitRenameState();
         const legitCh = registry.get(LEGIT_CH);
@@ -743,10 +769,10 @@ const msgFor = (channel, authorId, content, member) => {
         const bad = mkCmd('config', 'set', { opts: { str: 'SOLD_CATEGORY_ID', channel: { id: '666666666666666601', type: 0 } } });
         await index.handleInteraction(bad);
         assert.ok(JSON.stringify(bad.replies).includes('phải là một **danh mục'), 'phải từ chối kênh thường');
-        assert.notEqual(runtime.cfg('SOLD_CATEGORY_ID'), '666666666666666601');
+        assert.notEqual(runtime.cfg('SOLD_CATEGORY_ID', guild), '666666666666666601');
         const good = mkCmd('config', 'set', { opts: { str: 'SOLD_CATEGORY_ID', channel: { id: SOLD_CAT, type: 4 } } });
         await index.handleInteraction(good);
-        assert.equal(runtime.cfg('SOLD_CATEGORY_ID'), SOLD_CAT);
+        assert.equal(runtime.cfg('SOLD_CATEGORY_ID', guild), SOLD_CAT);
     });
     await test('/owner: chỉ Owner gốc thêm/bớt; Owner phụ có đủ quyền Owner nhưng không tự thêm Owner khác', async () => {
         const { isOwnerId, checkStaffOrOwner } = require(path.join(root, 'utils/permissions'));
@@ -766,7 +792,7 @@ const msgFor = (channel, authorId, content, member) => {
         // Owner phụ dùng được /config, nhưng không thêm được Owner khác
         const cfgUse = mkCmd('config', 'set', { user: co.id, opts: { str: 'BILL_ID', channel: { id: '666666666666666666' } } });
         await index.handleInteraction(cfgUse);
-        assert.equal(runtime.cfg('BILL_ID'), '666666666666666666');
+        assert.equal(runtime.cfg('BILL_ID', guild), '666666666666666666');
         await index.handleInteraction(mkCmd('config', 'clear', { user: co.id, opts: { str: 'BILL_ID' } }));
         const tryAdd = mkCmd('owner', 'add', { user: co.id, opts: { user: other } });
         await index.handleInteraction(tryAdd);
@@ -807,14 +833,42 @@ const msgFor = (channel, authorId, content, member) => {
     });
     await test('loadConfig nạp lại cấu hình + staff từ DB sau khi khởi động lại', async () => {
         const { loadConfig } = require(path.join(root, 'utils/config'));
-        await db.saveSetting('CFG_KENH_2FA', '123456789012345678');
+        await db.saveSetting('CFG_KENH_2FA@' + guild.id, '123456789012345678');
         await db.saveSetting('STAFF_USERS', ['800000000000000050']);
         await loadConfig();
-        assert.equal(runtime.cfg('KENH_2FA'), '123456789012345678');
+        assert.equal(runtime.cfg('KENH_2FA', guild), '123456789012345678');
+        assert.equal(runtime.cfg('KENH_2FA', 'OTHER_GUILD'), '');
         assert.equal(runtime.isExtraStaff('800000000000000050'), true);
-        await db.saveSetting('CFG_KENH_2FA', null); await db.saveSetting('STAFF_USERS', null);
+        await db.saveSetting('CFG_KENH_2FA@' + guild.id, null); await db.saveSetting('STAFF_USERS', null);
         await loadConfig();
-        assert.equal(runtime.cfg('KENH_2FA'), '');
+        assert.equal(runtime.cfg('KENH_2FA', guild), '');
+    });
+    await test('cấu hình RIÊNG từng server: server A đặt không ảnh hưởng B; giá trị chung cũ chỉ áp dụng cho server chứa kênh đó; clear không rơi về giá trị chung', async () => {
+        const { setConfig } = require(path.join(root, 'utils/config'));
+        const CH_A = '777777777777777701', CH_B = '777777777777777702', LEGACY = '777777777777777799';
+        const gA = { id: 'GA', channels: { cache: new Map([[CH_A, {}], [LEGACY, {}]]) }, roles: { cache: new Map() } };
+        const gB = { id: 'GB', channels: { cache: new Map([[CH_B, {}]]) }, roles: { cache: new Map() } };
+        runtime.setGuildResolver(id => ({ GA: gA, GB: gB })[id]);
+        try {
+            await setConfig('SOLD_CATEGORY_ID', CH_A, 'GA');
+            await setConfig('SOLD_CATEGORY_ID', CH_B, 'GB');
+            assert.equal(runtime.cfg('SOLD_CATEGORY_ID', gA), CH_A);
+            assert.equal(runtime.cfg('SOLD_CATEGORY_ID', gB), CH_B);
+            assert.equal(runtime.cfg('SOLD_CATEGORY_ID', 'GA'), CH_A);
+            // giá trị chung cũ (chưa từng /config set theo server): chỉ server nào chứa kênh đó mới dùng
+            runtime.setOverride('STOCK_ID', LEGACY);
+            assert.equal(runtime.cfg('STOCK_ID', gA), LEGACY);
+            assert.equal(runtime.cfg('STOCK_ID', gB), '', 'server B không chứa kênh nên không mượn');
+            assert.equal(runtime.cfgSource('STOCK_ID', gA), 'db');
+            // server A xóa mục: không rơi về giá trị chung cũ
+            await setConfig('STOCK_ID', null, 'GA');
+            assert.equal(runtime.cfg('STOCK_ID', gA), '');
+            assert.equal(runtime.cfgSource('STOCK_ID', gA), 'none');
+        } finally {
+            runtime.setGuildResolver(null);
+            runtime.clearOverrides();
+            for (const k of ['SOLD_CATEGORY_ID@GA', 'SOLD_CATEGORY_ID@GB', 'STOCK_ID@GA']) await db.saveSetting('CFG_' + k, null);
+        }
     });
 
 

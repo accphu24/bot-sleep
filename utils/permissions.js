@@ -16,7 +16,7 @@ function isOwnerId(userId) {
 // Owner, hoặc có role Staff, hoặc được Owner thêm bằng /staff add
 function checkStaffOrOwner(member) {
     if (!member) return false;
-    const staffRoleId = cfg('STAFF_ROLE_ID');
+    const staffRoleId = cfg('STAFF_ROLE_ID', member.guild);
     const hasRole = isValidSnowflake(staffRoleId) && Boolean(member.roles?.cache?.has(staffRoleId));
     return isOwnerId(member.id) || hasRole || isExtraStaff(member.id);
 }

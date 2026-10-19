@@ -42,12 +42,12 @@ module.exports = {
 
         if (sub === 'role') {
             const role = interaction.options.getRole('role');
-            await setConfig('STAFF_ROLE_ID', role.id);
+            await setConfig('STAFF_ROLE_ID', role.id, interaction.guildId);
             return await reply(`✅ Đã đặt role Staff = <@&${role.id}>`);
         }
 
         const users = getExtraStaff();
-        const roleId = cfg('STAFF_ROLE_ID');
+        const roleId = cfg('STAFF_ROLE_ID', interaction.guild);
         const embed = new EmbedBuilder()
             .setTitle('👥 Danh sách Staff / Owner')
             .setColor('#00FFAA')

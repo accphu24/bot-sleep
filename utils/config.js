@@ -56,7 +56,15 @@ async function setLegitEnabled(guildId, enabled) {
     runtime.setLegitEnabled(guildId, enabled);
 }
 
-async function setConfig(name, value) {
+// Lưu 1 mục cấu hình. Có guildId thì chỉ áp dụng cho server đó (value = null nghĩa là xóa mục của server đó).
+async function setConfig(name, value, guildId) {
+    if (guildId) {
+        const key = `${name}@${guildId}`;
+        const stored = value === null || value === undefined || value === '' ? '-' : value;
+        await db.saveSetting(`CFG_${key}`, stored);
+        runtime.setOverride(key, stored);
+        return;
+    }
     await db.saveSetting(`CFG_${name}`, value);
     if (name === 'SOLD_CATEGORY_ID') await db.saveSetting('SOLD_CATEGORY_ID', null);   // bỏ khóa cũ
     runtime.setOverride(name, value);

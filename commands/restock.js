@@ -14,7 +14,7 @@ module.exports = {
         // Phản hồi ẩn tạm thời để xử lý
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-        const stockCategoryId = cfg('STOCK_ID');
+        const stockCategoryId = cfg('STOCK_ID', interaction.guild);
 
         if (!stockCategoryId || !/^\d{17,20}$/.test(stockCategoryId.trim())) {
             return await interaction.editReply({
