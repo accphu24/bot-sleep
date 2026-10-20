@@ -17,7 +17,7 @@ Bot Discord bán tài khoản Minecraft: card ảnh, ticket, VietQR, giao hàng 
 **Nên có:** `STAFF_ROLE_ID`, `STOCK_ID`, `TICKET_CATEGORY_ID`, `SOLD_CATEGORY_ID`, `BILL_ID`, `TRANSCRIPT_ID`, `AUTOREACTER_VOUCH` (kênh legit),
 `KENH_VOUCH`, `KENH_YOUTUBE`, `KENH_2FA`, `KENH_LOCK`, `LINK_QR`, `LEGIT_START`, `VOUCH_MENTION_ID`
 
-**Tùy chọn:** `MAIN_GUILD_ID` (server chính, mặc định `1462789815333289986`, xem mục *Dữ liệu theo server*), `MONGODB_DB` (mặc định `autobuy`), `MAX_OPEN_TICKETS` (2), `LEGIT_COOLDOWN_SEC` (20), `LEGIT_REACT_EMOJIS`, `EMOJI_INFO/ONLINE/OFFLINE`
+**Tùy chọn:** `BXH_COOLDOWN_SEC` (30), `MAIN_GUILD_ID` (server chính, mặc định `1462789815333289986`, xem mục *Dữ liệu theo server*), `MONGODB_DB` (mặc định `autobuy`), `MAX_OPEN_TICKETS` (2), `LEGIT_COOLDOWN_SEC` (20), `LEGIT_REACT_EMOJIS`, `EMOJI_INFO/ONLINE/OFFLINE`
 
 Các biến kênh/danh mục và `STAFF_ROLE_ID` cũng đặt được ngay trong Discord bằng `/config` và `/staff` (chỉ Owner), giá trị đặt bằng lệnh ưu tiên hơn biến môi trường.
 
@@ -28,6 +28,12 @@ Mỗi server có dữ liệu riêng: **khách + bảng xếp hạng + tổng ti�
 - Cấu hình (`/config`, `/staff`, `/owner`, bộ đếm legit, mốc role...) vẫn lưu chung trong `settings` vì khóa của chúng đã có ID server.
 - Role mốc chi tiêu chỉ cấp ở server nơi khách mua, dựa trên tổng tiền của server đó.
 - `npm run migrate` luôn ghi vào server chính.
+
+### Phân quyền theo server
+- **Owner gốc** (`OWNER_ID`) có quyền Owner ở **mọi** server.
+- **Owner phụ** (`/owner add`) và **Staff** (`/staff add`, `/staff role`) chỉ có quyền ở **server nơi được thêm**. Chạy các lệnh này ngay trong server cần phân quyền.
+- Danh sách chung cũ (`STAFF_USERS`, `OWNER_USERS`) tự chuyển thành danh sách của server chính ở lần khởi động đầu tiên sau khi cập nhật.
+- `.bxh` giới hạn mỗi người 1 lần / 30 giây (đổi bằng biến `BXH_COOLDOWN_SEC`, `0` = tắt). Staff/Owner không bị giới hạn.
 
 ## Ticket
 - Ticket **chỉ đóng khi Staff/Owner gõ `.close`** trong kênh ticket. Khách nhắn "legit" không làm ticket bị xóa.

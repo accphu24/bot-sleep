@@ -87,7 +87,7 @@ async function handlePanelButton(interaction, client) {
     ];
     const added = new Set([user.id, client.user.id]);
     if (isValidSnowflake(staffRoleId)) overwrites.push({ id: staffRoleId.trim(), type: OverwriteType.Role, allow: rw });
-    const staffIds = [...getExtraStaff(), ...getExtraOwners()];
+    const staffIds = [...getExtraStaff(guild), ...getExtraOwners(guild)];
     if (isValidSnowflake(ownerId)) staffIds.push(ownerId.trim());
     for (const id of staffIds) {
         if (added.has(id)) continue;

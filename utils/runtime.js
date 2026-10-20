@@ -1,8 +1,10 @@
 // Cấu hình chạy (đọc nhanh, đồng bộ) gồm: ghi đè cấu hình bằng lệnh Discord + danh sách staff thêm bằng /staff.
 // Ưu tiên: /config (lưu DB) > biến môi trường (Railway) > rỗng.
 const overrides = new Map();
-const extraStaff = new Set();
-const extraOwners = new Set();
+// Staff / Owner phụ thêm bằng lệnh: tách theo TỪNG server (guildId -> Set userId). Owner gốc (OWNER_ID) có quyền ở mọi server.
+const extraStaff = new Map();
+const extraOwners = new Map();
+const setOf = (map, guild) => map.get(gidOf(guild)) || new Set();
 // Bật / tắt đếm legit theo ID server. Mặc định (chưa đặt) = BẬT.
 const legitEnabled = new Map();
 // Kênh legit theo ID server (đặt bằng /config set muc:Kênh legit). Chưa đặt thì dùng biến AUTOREACTER_VOUCH làm dự phòng.
@@ -62,21 +64,26 @@ const setOverride = (name, value) => {
     else overrides.set(name, String(value));
 };
 
-const getExtraOwners = () => [...extraOwners];
-const isExtraOwner = (userId) => extraOwners.has(String(userId));
-const setExtraOwners = (ids) => {
-    extraOwners.clear();
-    for (const id of ids || []) extraOwners.add(String(id));
+const getExtraOwners = (guild) => [...setOf(extraOwners, guild)];
+const isExtraOwner = (userId, guild) => setOf(extraOwners, guild).has(String(userId));
+const setExtraOwners = (guild, ids) => {
+    const gid = gidOf(guild);
+    if (!gid) return;
+    if (!ids || !ids.length) extraOwners.delete(gid);
+    else extraOwners.set(gid, new Set(ids.map(String)));
 };
 
 const clearOverrides = () => overrides.clear();
 
-const getExtraStaff = () => [...extraStaff];
-const isExtraStaff = (userId) => extraStaff.has(String(userId));
-const setExtraStaff = (ids) => {
-    extraStaff.clear();
-    for (const id of ids || []) extraStaff.add(String(id));
+const getExtraStaff = (guild) => [...setOf(extraStaff, guild)];
+const isExtraStaff = (userId, guild) => setOf(extraStaff, guild).has(String(userId));
+const setExtraStaff = (guild, ids) => {
+    const gid = gidOf(guild);
+    if (!gid) return;
+    if (!ids || !ids.length) extraStaff.delete(gid);
+    else extraStaff.set(gid, new Set(ids.map(String)));
 };
+const clearExtraLists = () => { extraStaff.clear(); extraOwners.clear(); };
 
 const isLegitEnabled = (guildId) => legitEnabled.get(String(guildId)) !== false;
 const setLegitEnabled = (guildId, enabled) => { legitEnabled.set(String(guildId), Boolean(enabled)); };
@@ -93,4 +100,4 @@ const legitChannelFor = (guildId) => legitChannels.get(String(guildId)) || '';
 // Kênh này có phải kênh legit của server đó không: server đã cài kênh riêng thì chỉ kênh đó, chưa cài thì dùng biến AUTOREACTER_VOUCH
 const isLegitChannel = (guildId, channelId) => legitChannels.get(String(guildId)) === String(channelId);
 
-module.exports = { setLegitChannel, clearLegitChannels, getLegitChannelMap, legitChannelFor, isLegitChannel, isLegitEnabled, setLegitEnabled, clearLegitEnabled, cfg, cfgSource, setOverride, setGuildResolver, clearOverrides, getExtraOwners, isExtraOwner, setExtraOwners, getExtraStaff, isExtraStaff, setExtraStaff };
+module.exports = { setLegitChannel, clearLegitChannels, getLegitChannelMap, legitChannelFor, isLegitChannel, isLegitEnabled, setLegitEnabled, clearLegitEnabled, cfg, cfgSource, setOverride, setGuildResolver, clearOverrides, getExtraOwners, isExtraOwner, setExtraOwners, getExtraStaff, isExtraStaff, setExtraStaff, clearExtraLists };

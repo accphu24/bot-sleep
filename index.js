@@ -384,7 +384,7 @@ async function handleBuy(interaction) {
             alreadyAdded.add(sellerId.trim());
         }
         // Staff thêm bằng /staff add cần thấy ticket để dùng .close
-        for (const staffUserId of [...getExtraStaff(), ...getExtraOwners()]) {
+        for (const staffUserId of [...getExtraStaff(guild), ...getExtraOwners(guild)]) {
             if (alreadyAdded.has(staffUserId) || staffUserId === ownerId?.trim()) continue;
             permissionOverwrites.push({ id: staffUserId, type: OverwriteType.Member, allow: rw });
             alreadyAdded.add(staffUserId);
@@ -807,7 +807,7 @@ async function checkCanClose({ channelId, userId, member }) {
         return { ok: false, msg: '❌ **Từ chối:** Chỉ Staff hoặc Owner mới được đóng ticket (gõ `.close`).' };
     }
     // Chưa giao được thông tin cho khách thì không cho đóng (tránh mất tài khoản đã bán). Owner được đóng cưỡng bức.
-    if (ticket.confirmed && ticket.delivery === 'pending' && !isOwnerId(userId)) {
+    if (ticket.confirmed && ticket.delivery === 'pending' && !isOwnerId(userId, member?.guild)) {
         return {
             ok: false,
             msg: '⚠️ Chưa gửi được thông tin tài khoản cho khách! Hãy bấm **Gửi lại thông tin** (hoặc gõ `.resend`) hoặc bàn giao thủ công trước khi đóng (Owner có thể đóng cưỡng bức).'
@@ -846,7 +846,7 @@ async function handleInteraction(interaction) {
 async function handleInteractionInner(interaction) {
     try {
         if (interaction.isChatInputCommand()) {
-            if (OWNER_ONLY_COMMANDS.includes(interaction.commandName) && !isOwnerId(interaction.user?.id)) {
+            if (OWNER_ONLY_COMMANDS.includes(interaction.commandName) && !isOwnerId(interaction.user?.id, interaction.guild)) {
                 return await interaction.reply({
                     content: '❌ **Từ chối:** Lệnh này chỉ dành riêng cho Owner!',
                     flags: EPHEMERAL
@@ -978,6 +978,19 @@ function onLegitCooldown(userId, guildId = '') {
     if (legitCooldown.size > 5000) {
         for (const [id, t] of legitCooldown) if (Date.now() - t > waitMs) legitCooldown.delete(id);
     }
+    return false;
+}
+
+// Chống spam lệnh .bxh: 1 người / 1 server / BXH_COOLDOWN_SEC giây (mặc định 30)
+const BXH_COOLDOWN_SEC = Math.max(0, parseInt(process.env.BXH_COOLDOWN_SEC, 10) || 30);
+const bxhCooldown = new Map();
+function onBxhCooldown(userId, guildId) {
+    if (!BXH_COOLDOWN_SEC) return false;
+    const k = `${guildId}:${userId}`;
+    const t = Date.now();
+    if (t - (bxhCooldown.get(k) || 0) < BXH_COOLDOWN_SEC * 1000) return true;
+    bxhCooldown.set(k, t);
+    if (bxhCooldown.size > 2000) for (const [id, at] of bxhCooldown) if (t - at > BXH_COOLDOWN_SEC * 1000) bxhCooldown.delete(id);
     return false;
 }
 
@@ -1149,7 +1162,7 @@ async function handleSoldMessage(message) {
         return true;
     }
 
-    const isOwner = isOwnerId(message.author.id);
+    const isOwner = isOwnerId(message.author.id, message.guild);
     if (account?.sellerId && !isOwner && message.author.id !== account.sellerId) {
         await message.reply({
             content: `❌ **Từ chối:** Kênh này do <@${account.sellerId}> tạo. Chỉ người tạo tài khoản này hoặc Owner mới có quyền dùng lệnh \`sold\`!`
@@ -1343,6 +1356,12 @@ async function handleMessageInner(message) {
 
         // 3d. Lệnh .bxh (mọi người): xem bảng xếp hạng top khách mua nhiều nhất (đọc từ collection customers trong MongoDB)
         if (/^\.bxh\s*$/i.test(message.content.trim())) {
+            // Chống spam: mỗi người chỉ gõ được 1 lần / BXH_COOLDOWN_SEC giây (Staff/Owner không bị chặn)
+            if (!checkStaffOrOwner(message.member) && onBxhCooldown(message.author.id, message.guild.id)) {
+                const warn = await message.reply({ content: `⏳ Bạn gõ \`.bxh\` nhanh quá, chờ ${BXH_COOLDOWN_SEC} giây rồi thử lại nhé!` }).catch(() => null);
+                if (warn) setTimeout(() => warn.delete().catch(() => null), 5000);
+                return;
+            }
             try {
                 await message.channel.send(await buildLeaderboardPayload(message.guild));
             } catch (err) {
@@ -1370,7 +1389,7 @@ async function handleMessageInner(message) {
 
             const staffQR = await db.getStaffQR(message.author.id);
             if (!staffQR || !staffQR.bankName || !staffQR.accountNumber) {
-                if (isOwnerId(message.author.id) && process.env.LINK_QR) {
+                if (isOwnerId(message.author.id, message.guild) && process.env.LINK_QR) {
                     const ownerEmbed = new EmbedBuilder()
                         .setTitle(`💳 THANH TOÁN: OWNER SHOP`)
                         .setColor('#00FFAA')

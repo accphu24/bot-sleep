@@ -69,7 +69,7 @@ function makeCardMessage(username) {
     };
     return m;
 }
-const makeMember = (id, roles = []) => ({ id, roles: { cache: { has: (r) => roles.includes(r) } } });
+const makeMember = (id, roles = []) => ({ id, get guild() { return guild; }, roles: { cache: { has: (r) => roles.includes(r) } } });
 const users = new Map();
 function makeUser(id, { dmFails = false } = {}) {
     const u = { id, username: 'u' + id.slice(-3), dms: [], dmFails, async send(x) { if (u.dmFails) throw new Error('Cannot send messages to this user'); u.dms.push(x); } };
@@ -724,13 +724,13 @@ const msgFor = (channel, authorId, content, member) => {
         const denied = mkCmd('staff', 'add', { user: SELLER, opts: { user: target } });
         await index.handleInteraction(denied);
         assert.ok(JSON.stringify(denied.replies).includes('chỉ dành riêng cho Owner'));
-        assert.equal(runtime.isExtraStaff(target.id), false);
+        assert.equal(runtime.isExtraStaff(target.id, guild), false);
 
         const { checkStaffOrOwner } = require(path.join(root, 'utils/permissions'));
         assert.equal(checkStaffOrOwner(makeMember(target.id)), false);
         await index.handleInteraction(mkCmd('staff', 'add', { opts: { user: target } }));
         assert.equal(checkStaffOrOwner(makeMember(target.id)), true);
-        assert.deepEqual(await db.getSetting('STAFF_USERS'), [target.id]);
+        assert.deepEqual(await db.getSetting('STAFF_USERS@' + guild.id), [target.id]);
 
         await index.handleInteraction(mkCmd('staff', 'remove', { opts: { user: target } }));
         assert.equal(checkStaffOrOwner(makeMember(target.id)), false);
@@ -783,12 +783,13 @@ const msgFor = (channel, authorId, content, member) => {
         const denied = mkCmd('owner', 'add', { user: SELLER, opts: { user: co } });
         await index.handleInteraction(denied);
         assert.ok(JSON.stringify(denied.replies).includes('chỉ dành riêng cho Owner'));
-        assert.equal(isOwnerId(co.id), false);
+        assert.equal(isOwnerId(co.id, guild), false);
 
         await index.handleInteraction(mkCmd('owner', 'add', { opts: { user: co } }));
-        assert.equal(isOwnerId(co.id), true);
+        assert.equal(isOwnerId(co.id, guild), true);
+        assert.equal(isOwnerId(co.id, 'GB'), false, 'Owner phụ chỉ có quyền ở server được thêm');
         assert.equal(checkStaffOrOwner(makeMember(co.id)), true);
-        assert.deepEqual(await db.getSetting('OWNER_USERS'), [co.id]);
+        assert.deepEqual(await db.getSetting('OWNER_USERS@' + guild.id), [co.id]);
 
         // Owner phụ dùng được /config, nhưng không thêm được Owner khác
         const cfgUse = mkCmd('config', 'set', { user: co.id, opts: { str: 'BILL_ID', channel: { id: '666666666666666666' } } });
@@ -798,16 +799,17 @@ const msgFor = (channel, authorId, content, member) => {
         const tryAdd = mkCmd('owner', 'add', { user: co.id, opts: { user: other } });
         await index.handleInteraction(tryAdd);
         assert.ok(JSON.stringify(tryAdd.replies).includes('Owner gốc'));
-        assert.equal(isOwnerId(other.id), false);
+        assert.equal(isOwnerId(other.id, guild), false);
 
         // Không bỏ được Owner gốc
         const rmRoot = mkCmd('owner', 'remove', { opts: { user: { id: OWNER, bot: false } } });
         await index.handleInteraction(rmRoot);
         assert.ok(JSON.stringify(rmRoot.replies).includes('Không thể bỏ Owner gốc'));
-        assert.equal(isOwnerId(OWNER), true);
+        assert.equal(isOwnerId(OWNER, guild), true);
+        assert.equal(isOwnerId(OWNER, 'GB'), true, 'Owner gốc có quyền ở mọi server');
 
         await index.handleInteraction(mkCmd('owner', 'remove', { opts: { user: co } }));
-        assert.equal(isOwnerId(co.id), false);
+        assert.equal(isOwnerId(co.id, guild), false);
     });
     await test('/config check_emoji báo emoji nào bot thấy / không thấy, và quyền trong kênh legit', async () => {
         const fakeEmoji = { id: '1556987445437014116', guild: { name: 'Drew Store' } };
@@ -835,12 +837,13 @@ const msgFor = (channel, authorId, content, member) => {
     await test('loadConfig nạp lại cấu hình + staff từ DB sau khi khởi động lại', async () => {
         const { loadConfig } = require(path.join(root, 'utils/config'));
         await db.saveSetting('CFG_KENH_2FA@' + guild.id, '123456789012345678');
-        await db.saveSetting('STAFF_USERS', ['800000000000000050']);
+        await db.saveSetting('STAFF_USERS@' + guild.id, ['800000000000000050']);
         await loadConfig();
         assert.equal(runtime.cfg('KENH_2FA', guild), '123456789012345678');
         assert.equal(runtime.cfg('KENH_2FA', 'OTHER_GUILD'), '');
-        assert.equal(runtime.isExtraStaff('800000000000000050'), true);
-        await db.saveSetting('CFG_KENH_2FA@' + guild.id, null); await db.saveSetting('STAFF_USERS', null);
+        assert.equal(runtime.isExtraStaff('800000000000000050', guild), true);
+        assert.equal(runtime.isExtraStaff('800000000000000050', 'GB'), false, 'staff không lan sang server khác');
+        await db.saveSetting('CFG_KENH_2FA@' + guild.id, null); await db.saveSetting('STAFF_USERS@' + guild.id, null);
         await loadConfig();
         assert.equal(runtime.cfg('KENH_2FA', guild), '');
     });

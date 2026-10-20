@@ -30,7 +30,7 @@ module.exports = {
                 .setRequired(true).setMinValue(0))),
 
     async execute(interaction) {
-        if (!isOwnerId(interaction.user.id)) {
+        if (!isOwnerId(interaction.user.id, interaction.guild)) {
             return await interaction.reply({ content: '❌ Lệnh này chỉ dành riêng cho Owner!', flags: MessageFlags.Ephemeral });
         }
         const sub = interaction.options.getSubcommand();

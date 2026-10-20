@@ -51,12 +51,12 @@ function buildHelpEmbed(member) {
         );
     }
 
-    if (isOwnerId(member?.id)) {
+    if (isOwnerId(member?.id, member?.guild)) {
         embed.addFields({
             name: '👑 Chỉ Owner',
             value: [
-                '`/owner add|remove|list`: Owner phụ (chỉ Owner gốc thêm / bớt được).',
-                '`/staff add|remove|list|role`: quản lý Staff và role Staff.',
+                '`/owner add|remove|list`: Owner phụ của server này (chỉ Owner gốc thêm / bớt được).',
+                '`/staff add|remove|list|role`: quản lý Staff và role Staff của server này.',
                 '`/config set|clear|show`: đặt kênh legit, vouch, stock, ticket, sold, bill, transcript...',
                 '`/config legit_dem bat|tat`: bật / tắt đếm số legit (tắt = chỉ react, lưu theo từng server).',
                 '`/config legit_count so`: chỉnh số legit hiện tại và đổi tên kênh legit.',
