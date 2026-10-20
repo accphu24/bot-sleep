@@ -25,7 +25,7 @@ const { renderCard } = require('./utils/cardRenderer');
 const { parseAmount, formatVND } = require('./utils/money');
 const { parseAccountForm, maskEmail } = require('./utils/accountForm');
 const { isValidSnowflake, isOwnerId, checkStaffOrOwner } = require('./utils/permissions');
-const { generateTransferMemo, buildVietQRUrl } = require('./utils/vietqr');
+const { generateTransferMemo, buildVietQRUrl, prepareQrImage } = require('./utils/vietqr');
 const { buildCardRow } = require('./utils/cardButtons');
 const { sendTranscript } = require('./utils/transcript');
 const { stickyCache } = require('./utils/cache');
@@ -421,9 +421,17 @@ async function handleBuy(interaction) {
         let qrInfoText = '';
         const isSellerOwner = isValidSnowflake(ownerId) && sellerId === ownerId;
         const targetSellerId = sellerId || ownerId;
-        const sellerQR = isValidSnowflake(targetSellerId) ? await db.getStaffQR(targetSellerId) : null;
+        // Thứ tự ưu tiên: QR người bán -> QR ngân hàng của Owner (/set_qr) -> ảnh LINK_QR -> báo chưa cài
+        let sellerQR = isValidSnowflake(targetSellerId) ? await db.getStaffQR(targetSellerId).catch(() => null) : null;
+        let qrSource = 'nguoi_ban';
+        if (!(sellerQR && sellerQR.bankName && sellerQR.accountNumber) && isValidSnowflake(ownerId) && ownerId.trim() !== targetSellerId) {
+            const ownerQR = await db.getStaffQR(ownerId.trim()).catch(() => null);
+            if (ownerQR && ownerQR.bankName && ownerQR.accountNumber) { sellerQR = ownerQR; qrSource = 'owner'; }
+        }
+        const hasBankQR = !!(sellerQR && sellerQR.bankName && sellerQR.accountNumber);
+        const linkQr = (process.env.LINK_QR || '').trim();
 
-        if (sellerQR && sellerQR.bankName && sellerQR.accountNumber) {
+        if (hasBankQR) {
             qrImageUrl = buildVietQRUrl(sellerQR.bankName, sellerQR.accountNumber, numericAmount, transferMemo, sellerQR.bankType);
             qrInfoText =
                 `🏦 **Ngân hàng:** \`${sellerQR.bankName}\`\n` +
@@ -431,18 +439,21 @@ async function handleBuy(interaction) {
                 `👤 **Chủ tài khoản:** \`${sellerQR.bankType || 'N/A'}\`\n` +
                 `💰 **Số tiền:** \`${displayPrice}\`\n` +
                 `📝 **Nội dung CK:** \`${transferMemo}\``;
-        } else if (isSellerOwner && process.env.LINK_QR) {
-            qrImageUrl = process.env.LINK_QR;
+        } else if (linkQr) {
+            qrSource = 'LINK_QR';
+            qrImageUrl = linkQr;
             qrInfoText =
                 `💰 **Số tiền:** \`${displayPrice}\`\n` +
                 `📝 **Nội dung CK:** \`${transferMemo}\`\n\n` +
-                `*Mã QR thanh toán chính thức của Owner Shop:*`;
+                `*Mã QR thanh toán của Shop (nhớ ghi đúng nội dung chuyển khoản):*`;
         } else {
+            qrSource = 'khong_co';
             qrInfoText =
                 `💰 **Số tiền:** \`${displayPrice}\`\n` +
                 `📝 **Nội dung CK:** \`${transferMemo}\`\n\n` +
                 `⚠ Người bán (<@${sellerId || ownerId}>) chưa cài đặt mã QR ngân hàng bằng lệnh \`/set_qr\`! Vui lòng gửi STK trực tiếp tại đây.`;
         }
+        log.info('QR', 'Chọn nguồn QR cho ticket', { nguon: qrSource, nguoiBan: targetSellerId, coAnh: !!qrImageUrl, url: qrImageUrl || undefined });
 
         const embed = new EmbedBuilder()
             .setTitle(`🛒 ĐƠN MUA TÀI KHOẢN: ${account.username.toUpperCase()}`)
@@ -456,9 +467,8 @@ async function handleBuy(interaction) {
             .setFooter({ text: 'Drew Store AutoBuy • Vui lòng chờ người bán xác nhận' })
             .setTimestamp();
 
-        if (qrImageUrl) {
-            try { embed.setImage(new URL(qrImageUrl).href); } catch (e) { /* bỏ qua URL lỗi */ }
-        }
+        const qrImg = await prepareQrImage(qrImageUrl, { ticket: ticketChannel.id });
+        if (qrImg.imageUrl) embed.setImage(qrImg.imageUrl);
 
         // Ticket chỉ đóng khi Staff/Owner gõ .close (không còn nút Close, khách không tự đóng được)
         const ticketRow = new ActionRowBuilder().addComponents(
@@ -467,11 +477,19 @@ async function handleBuy(interaction) {
                 .setLabel('Confirm').setEmoji('✅').setStyle(ButtonStyle.Success)
         );
 
-        await ticketChannel.send({
+        const ticketMsg = {
             content: `👋 <@${buyer.id}> đã tạo đơn mua tài khoản từ <@${sellerId || ownerId}>!`,
             embeds: [embed],
             components: [ticketRow]
-        });
+        };
+        try {
+            await ticketChannel.send({ ...ticketMsg, files: qrImg.files });
+        } catch (sendErr) {
+            // Gửi kèm file lỗi (vd thiếu quyền đính kèm): gửi lại bằng link ảnh trực tiếp để khách vẫn thấy QR
+            log.warn('QR', 'Gửi ticket kèm ảnh QR lỗi, thử lại bằng link', { loi: sendErr.message, ticket: ticketChannel.id });
+            if (qrImg.files.length && qrImageUrl) { try { embed.setImage(new URL(qrImageUrl).href); } catch (e) { embed.setImage(null); } }
+            await ticketChannel.send(ticketMsg);
+        }
 
         await interaction.editReply({ content: `✅ Đã tạo kênh ticket cho bạn: <#${ticketChannel.id}>` });
     } catch (err) {
@@ -1354,10 +1372,15 @@ async function handleMessage(message) {
                 )
                 .setFooter({ text: 'Drew Store AutoBuy • VietQR' })
                 .setTimestamp();
-            if (qrImageUrl) {
-                try { qrEmbed.setImage(new URL(qrImageUrl).href); } catch (e) { /* bỏ qua URL lỗi */ }
+            const qrImg = await prepareQrImage(qrImageUrl, { lenh: '.vietqr', user: message.author.id });
+            if (qrImg.imageUrl) qrEmbed.setImage(qrImg.imageUrl);
+            try {
+                await message.channel.send({ embeds: [qrEmbed], files: qrImg.files });
+            } catch (sendErr) {
+                log.warn('QR', 'Gửi .vietqr kèm ảnh lỗi, thử lại bằng link', { loi: sendErr.message, kenh: message.channel.id });
+                if (qrImg.files.length && qrImageUrl) { try { qrEmbed.setImage(new URL(qrImageUrl).href); } catch (e) { qrEmbed.setImage(null); } }
+                await message.channel.send({ embeds: [qrEmbed] }).catch(err => log.warn('QR', 'Không gửi được .vietqr', { loi: err.message }));
             }
-            await message.channel.send({ embeds: [qrEmbed] });
             return;
         }
 
