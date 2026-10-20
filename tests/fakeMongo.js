@@ -129,10 +129,10 @@ class FakeDb {
 }
 
 class FakeMongoClient {
-    constructor() { FakeMongoClient.last = this; this._db = new FakeDb(); }
+    constructor() { FakeMongoClient.last = this; this._dbs = {}; }
     async connect() {}
     async close() {}
-    db() { return this._db; }
+    db(name = 'default') { return (this._dbs[name] ||= new FakeDb()); }
 }
 
 module.exports = { FakeMongoClient };

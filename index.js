@@ -240,7 +240,19 @@ async function sendCredentialsDM(user, account, creds, guild) {
 // ==========================================
 // NHẮC VOUCH (lưu trong DB, mỗi 60 giây quét 1 lần)
 // ==========================================
+// Quét nhắc vouch của TỪNG server (mỗi server có kho nhắc riêng)
 async function runVouchReminders() {
+    for (const gid of guildIdsToSweep()) {
+        await db.withGuild(gid, () => runVouchRemindersForCurrentGuild()).catch(err => console.error('[Lỗi quét nhắc vouch]:', gid, err.message));
+    }
+}
+
+// Server cần quét: server chính + mọi server bot đang ở
+function guildIdsToSweep() {
+    return [...new Set([db.MAIN_GUILD_ID, ...(client.guilds?.cache ? client.guilds.cache.keys() : [])])];
+}
+
+async function runVouchRemindersForCurrentGuild() {
     const due = await db.getDueReminders(Date.now());
     for (const r of due) {
         try {
@@ -268,18 +280,22 @@ async function runVouchReminders() {
 // DỌN DẸP KHI KHỞI ĐỘNG (bot tắt đột ngột có thể để lại tài khoản kẹt PROCESSING)
 // ==========================================
 async function reconcileOnStartup() {
-    try {
-        for (const t of await db.listTickets()) {
-            if (!(await channelExists(t._id))) await handleCancelTicket(t._id);
+    for (const gid of guildIdsToSweep()) {
+        try {
+            await db.withGuild(gid, async () => {
+                for (const t of await db.listTickets()) {
+                    if (!(await channelExists(t._id))) await handleCancelTicket(t._id);
+                }
+                for (const a of await db.findAccounts({ status: 'PROCESSING' })) {
+                    const ticket = await db.getTicketByUsername(a._id);
+                    if (!ticket) {
+                        if (await db.releaseAccount(a._id)) await restoreAvailableCard(a, null);
+                    }
+                }
+            });
+        } catch (err) {
+            console.error('[LỖI RECONCILE]:', gid, err);
         }
-        for (const a of await db.findAccounts({ status: 'PROCESSING' })) {
-            const ticket = await db.getTicketByUsername(a._id);
-            if (!ticket) {
-                if (await db.releaseAccount(a._id)) await restoreAvailableCard(a, null);
-            }
-        }
-    } catch (err) {
-        console.error('[LỖI RECONCILE]:', err);
     }
 }
 
@@ -655,7 +671,7 @@ async function handleConfirm(interaction) {
     }
 
     // Gửi bill vào kênh BILL_ID
-    const billId = cfg('BILL_ID', interaction.guild) || process.env.BILL_Id;
+    const billId = cfg('BILL_ID', interaction.guild) || process.env.BILL_ID;
     if (billId && isValidSnowflake(billId.trim())) {
         try {
             const billChannel = await client.channels.fetch(billId.trim()).catch(() => null);
@@ -824,6 +840,10 @@ const STAFF_RESTRICTED_COMMANDS = ['restock', 'leaderboard', 'set_qr', 'skin', '
 const OWNER_ONLY_COMMANDS = ['staff', 'config', 'set_kenhsold', 'owner'];
 
 async function handleInteraction(interaction) {
+    return db.withGuild(interaction.guildId || interaction.guild?.id, () => handleInteractionInner(interaction));
+}
+
+async function handleInteractionInner(interaction) {
     try {
         if (interaction.isChatInputCommand()) {
             if (OWNER_ONLY_COMMANDS.includes(interaction.commandName) && !isOwnerId(interaction.user?.id)) {
@@ -1067,7 +1087,7 @@ async function scanLegitChannel(channel) {
 
     let last = null;
     for (const m of todo) {
-        await db.clearRemindersForBuyer(m.author.id).catch(() => null);
+        await db.withGuild(channel.guildId, () => db.clearRemindersForBuyer(m.author.id)).catch(() => null);
         const n = await reactLegit(m, { rename: false, source: 'quet-khoi-dong' });
         if (n !== null) last = n;
     }
@@ -1200,6 +1220,12 @@ async function handleSoldMessage(message) {
 }
 
 async function handleMessage(message) {
+    const guildId = message.guildId || message.guild?.id;
+    if (!guildId || message.author?.bot) return;
+    return db.withGuild(guildId, () => handleMessageInner(message));
+}
+
+async function handleMessageInner(message) {
     try {
         if (!message.guild || message.author.bot) return;
 
@@ -1479,7 +1505,7 @@ client.on(Events.GuildDelete || 'guildDelete', guild => log.warn('GUILD', 'Bot r
 
 client.on(Events.ChannelDelete || 'channelDelete', async channel => {
     try {
-        await handleCancelTicket(channel.id);
+        await db.withGuild(channel.guildId, () => handleCancelTicket(channel.id));
     } catch (err) {
         console.error('[LỖI CHANNEL DELETE TICKET]:', err);
     }

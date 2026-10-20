@@ -3,42 +3,99 @@
 // - Thao tác quan trọng dùng điều kiện nguyên tử để chống mua trùng / confirm trùng.
 // - Thông tin đăng nhập tài khoản được mã hóa AES-256-GCM trước khi lưu.
 const { MongoClient } = require('mongodb');
+const { AsyncLocalStorage } = require('async_hooks');
 const { encryptJSON, decryptJSON } = require('./crypto');
 
 let client = null;
-let db = null;
-const ticketChannelIds = new Set();   // tra nhanh "kênh này có phải ticket không" mà không cần hỏi DB
+let db = null;                // database CHÍNH: chứa `settings` (cấu hình toàn cục) và dữ liệu của server chính
+let baseName = 'autobuy';
+
+// ===== Tách dữ liệu theo server =====
+// Mỗi server có database riêng cho: accounts, tickets, staff_qr, customers, reminders.
+//  - Server chính (MAIN_GUILD_ID) dùng luôn database cũ => dữ liệu cũ tự thuộc về server này, không cần chuyển dữ liệu.
+//  - Server khác dùng database `<tên db>_<guildId>`, tự tạo khi cần.
+//  - `settings` (cấu hình, owner/staff, bộ đếm legit...) vẫn dùng chung vì khóa của chúng đã có ID server.
+// Server hiện tại được truyền ngầm qua AsyncLocalStorage: bọc xử lý bằng withGuild(guildId, fn).
+// Không có server trong ngữ cảnh (vd script, test) => dùng dữ liệu của server chính.
+const MAIN_GUILD_ID = String(process.env.MAIN_GUILD_ID || '1462789815333289986').trim();
+const GUILD_COLLECTIONS = new Set(['accounts', 'tickets', 'staff_qr', 'customers', 'reminders']);
+const als = new AsyncLocalStorage();
+const guildStores = new Map();        // guildId -> Promise<{ db, ticketIds }>
 
 const now = () => new Date().toISOString();
-const col = (name) => db.collection(name);
-const key = (username) => String(username).toLowerCase();
 const NO_CREDS = { projection: { credentials: 0 } };
+const key = (username) => String(username).toLowerCase();
+
+const currentGuildId = () => als.getStore()?.guildId || null;
+const effectiveGuildId = () => currentGuildId() || MAIN_GUILD_ID;
+
+async function openStore(guildId) {
+    const gdb = guildId === MAIN_GUILD_ID ? db : client.db(`${baseName}_${guildId}`);
+    const ticketIds = new Set();
+    await Promise.all([
+        gdb.collection('accounts').createIndex({ status: 1 }),
+        gdb.collection('accounts').createIndex({ cardChannelId: 1 }),
+        gdb.collection('tickets').createIndex({ usernameLower: 1 }),
+        gdb.collection('reminders').createIndex({ nextAt: 1 }),
+        gdb.collection('reminders').createIndex({ buyerId: 1 })
+    ]);
+    for (const t of await gdb.collection('tickets').find({}, { projection: { _id: 1 } }).toArray()) ticketIds.add(t._id);
+    return { db: gdb, ticketIds };
+}
+
+const readyStores = new Map();       // guildId -> { db, ticketIds } (đã mở xong, dùng đồng bộ được)
+
+function ensureStore(guildId) {
+    const id = String(guildId);
+    if (!guildStores.has(id)) {
+        const p = openStore(id).then(st => { readyStores.set(id, st); return st; }).catch(err => { guildStores.delete(id); throw err; });
+        guildStores.set(id, p);
+    }
+    return guildStores.get(id);
+}
+
+// Chạy fn trong ngữ cảnh của 1 server (mọi lệnh db.* bên trong sẽ đọc / ghi dữ liệu của server đó)
+async function withGuild(guildId, fn) {
+    if (!guildId) return fn();
+    await ensureStore(guildId);
+    return als.run({ guildId: String(guildId) }, fn);
+}
+
+// Server chính + các server đã mở dữ liệu trong lần chạy này
+const knownGuildIds = () => [...new Set([MAIN_GUILD_ID, ...readyStores.keys()])];
+
+function store() {
+    if (!db) throw new Error('Chưa kết nối MongoDB');
+    const id = effectiveGuildId();
+    const st = readyStores.get(id);
+    if (!st) throw new Error(`Dữ liệu của server ${id} chưa sẵn sàng (thiếu withGuild)`);
+    return st;
+}
+
+const col = (name) => {
+    if (!GUILD_COLLECTIONS.has(name)) return db.collection(name);
+    return store().db.collection(name);
+};
+const ticketIdsSet = () => store().ticketIds;
 
 async function connect() {
     const uri = process.env.MONGODB_URI || process.env.MONGO_URL;
     if (!uri) throw new Error('Thiếu biến môi trường MONGODB_URI (hoặc MONGO_URL)');
     client = new MongoClient(uri);
     await client.connect();
-    db = client.db(process.env.MONGODB_DB || 'autobuy');
-
-    await Promise.all([
-        col('accounts').createIndex({ status: 1 }),
-        col('accounts').createIndex({ cardChannelId: 1 }),
-        col('tickets').createIndex({ usernameLower: 1 }),
-        col('reminders').createIndex({ nextAt: 1 }),
-        col('reminders').createIndex({ buyerId: 1 })
-    ]);
-
-    ticketChannelIds.clear();
-    for (const t of await col('tickets').find({}, { projection: { _id: 1 } }).toArray()) {
-        ticketChannelIds.add(t._id);
-    }
+    baseName = process.env.MONGODB_DB || 'autobuy';
+    db = client.db(baseName);
+    guildStores.clear();
+    readyStores.clear();
+    await ensureStore(MAIN_GUILD_ID);
 }
 
 async function close() {
     if (client) await client.close();
     client = null;
     db = null;
+    guildStores.clear();
+    readyStores.clear();
 }
 
 // ==========================================
@@ -157,7 +214,7 @@ async function getTicket(channelId) {
 }
 
 function isTicketChannel(channelId) {
-    return ticketChannelIds.has(String(channelId));
+    return ticketIdsSet().has(String(channelId));
 }
 
 async function saveTicket(channelId, data) {
@@ -171,7 +228,7 @@ async function saveTicket(channelId, data) {
         createdAt: now()
     };
     await col('tickets').replaceOne({ _id: id }, doc, { upsert: true });
-    ticketChannelIds.add(id);
+    ticketIdsSet().add(id);
     return true;
 }
 
@@ -184,7 +241,7 @@ async function updateTicket(channelId, patch) {
 async function deleteTicket(channelId) {
     const id = String(channelId);
     const doc = await col('tickets').findOneAndDelete({ _id: id });
-    ticketChannelIds.delete(id);
+    ticketIdsSet().delete(id);
     return doc;
 }
 
@@ -324,7 +381,7 @@ async function clearRemindersForBuyer(buyerId) {
 }
 
 module.exports = {
-    connect, close,
+    connect, close, withGuild, currentGuildId, knownGuildIds, MAIN_GUILD_ID,
     getAccount, findAccounts, findAccountByCardChannel, upsertAccount, updateAccount,
     claimAccount, releaseAccount, markAccountSold, getAccountCredentials, wipeCredentials,
     getStaffQR, saveStaffQR,

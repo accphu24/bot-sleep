@@ -9,7 +9,8 @@ Object.assign(process.env, {
     DISCORD_TOKEN: 'x', CLIENT_ID: '1', OWNER_ID: OWNER, STAFF_ROLE_ID: STAFF_ROLE,
     MONGODB_URI: 'mongodb://fake', DATA_ENCRYPTION_KEY: 'khoa-test-khoa-test-khoa-test-123',
     SOLD_CATEGORY_ID: SOLD_CAT, STOCK_ID: STOCK_CAT, AUTOREACTER_VOUCH: LEGIT_CH, KENH_VOUCH: LEGIT_CH,
-    MAX_OPEN_TICKETS: '50', LEGIT_COOLDOWN_SEC: '0'
+    MAX_OPEN_TICKETS: '50', LEGIT_COOLDOWN_SEC: '0',
+    MAIN_GUILD_ID: 'G'   // server giả của bộ test là server chính (dữ liệu db.* không kèm server đọc đúng chỗ)
 });
 delete process.env.TRANSCRIPT_ID;
 

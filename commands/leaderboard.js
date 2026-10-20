@@ -58,6 +58,7 @@ async function buildLeaderboardPayload(guild) {
 const LB_PREFIX = 'LEADERBOARD_MESSAGE';
 async function refreshLeaderboardMessage(client) {
     const refs = await db.getSettingsWithPrefix(LB_PREFIX);   // gồm khóa cũ LEADERBOARD_MESSAGE và LEADERBOARD_MESSAGE_<serverId>
+    const scoped = db.currentGuildId();                        // đang trong 1 server (vd sau .done): chỉ sửa bảng của server đó
     const seen = new Set();
     let updated = false;
     for (const doc of refs) {
@@ -66,8 +67,12 @@ async function refreshLeaderboardMessage(client) {
         seen.add(ref.messageId);
         try {
             const channel = await client.channels.fetch(ref.channelId);
+            const guildId = channel.guild?.id || channel.guildId;
+            if (scoped && guildId !== scoped) continue;
             const message = await channel.messages.fetch(ref.messageId);
-            await message.edit(await buildLeaderboardPayload(channel.guild));
+            // Mỗi bảng đọc dữ liệu khách của ĐÚNG server chứa nó
+            const payload = await db.withGuild(guildId, () => buildLeaderboardPayload(channel.guild));
+            await message.edit(payload);
             updated = true;
         } catch (err) {
             // Tin nhắn / kênh đã bị xóa: quên bảng này. Lỗi tạm thời (mạng, rate limit...): giữ lại để lần sau thử tiếp.
