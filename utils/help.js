@@ -13,6 +13,7 @@ function buildHelpEmbed(member) {
                 '3. Chờ người bán bấm **Confirm**. Bot sẽ gửi thông tin tài khoản qua **tin nhắn riêng (DM)**, nhớ bật nhận DM từ thành viên server.',
                 '4. Sau khi nhận hàng, vào kênh legit gõ: `+1 legit @người_bán mfa` (bot sẽ react xác nhận).',
                 '`.av` hoặc `.av @người_dùng`: xem avatar.',
+                '`.bxh`: xem bảng xếp hạng top khách mua nhiều nhất.',
                 '`.help`: xem hướng dẫn này.'
             ].join('\n')
         });

@@ -1297,6 +1297,17 @@ async function handleMessage(message) {
             return;
         }
 
+        // 3d. Lệnh .bxh (mọi người): xem bảng xếp hạng top khách mua nhiều nhất (đọc từ collection customers trong MongoDB)
+        if (/^\.bxh\s*$/i.test(message.content.trim())) {
+            try {
+                await message.channel.send(await buildLeaderboardPayload(message.guild));
+            } catch (err) {
+                console.warn('[LEADERBOARD] Lỗi lệnh .bxh:', err.message);
+                await message.reply({ content: '❌ Không lấy được bảng xếp hạng, thử lại sau nhé!' }).catch(() => null);
+            }
+            return;
+        }
+
         // 4. Lệnh .vietqr
         if (/^\.vietqr\b/i.test(message.content.trim())) {
             if (!checkStaffOrOwner(message.member)) {
