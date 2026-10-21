@@ -31,6 +31,7 @@ const { sendTranscript } = require('./utils/transcript');
 const { stickyCache } = require('./utils/cache');
 const { buildHelpEmbed } = require('./utils/help');
 const profile = require('./utils/profile');
+const { parseBxhText } = require('./utils/bxhImport');
 const { isPanelButton, buildPanelPayload, handlePanelButton } = require('./utils/panel');
 const { buildLeaderboardPayload, refreshLeaderboardMessage } = require('./commands/leaderboard');
 const { processDone } = require('./commands/done');
@@ -1378,6 +1379,24 @@ async function handleMessageInner(message) {
             });
             if (!result.ok) return await message.reply({ content: result.msg }).catch(() => null);
             await message.channel.send({ embeds: [result.embed] });
+            await refreshLeaderboardMessage(client).catch(err => console.warn('[LEADERBOARD] Không cập nhật được:', err.message));
+            return;
+        }
+
+        // 3c2. Lệnh .nhapbxh (chỉ Owner): dán bảng xếp hạng có sẵn (mỗi dòng <@id> + số tiền) để nhập vào dữ liệu của server này.
+        //      ĐẶT tổng chi tiêu của từng khách = số trong bảng (không cộng dồn) nên nhập lại không bị trùng. Không tự cấp role mốc.
+        if (profile.has('bxh') && /^\.nhapbxh(\s|$)/i.test(message.content.trim())) {
+            if (!isOwnerId(message.author.id, message.guild)) {
+                return await message.reply({ content: '❌ Lệnh `.nhapbxh` chỉ dành cho Owner!' }).catch(() => null);
+            }
+            const body = message.content.trim().replace(/^\.nhapbxh/i, '');
+            const { rows, bad } = parseBxhText(body);
+            if (!rows.length) {
+                return await message.reply({ content: '⚠️ **Cú pháp:** `.nhapbxh` rồi xuống dòng, mỗi dòng 1 khách: `@khách 5.346.010đ` (dán thẳng bảng xếp hạng cũng được; quá 2000 ký tự thì chia làm nhiều tin).' }).catch(() => null);
+            }
+            for (const r of rows) await db.setCustomerTotal(r.id, r.amount);
+            log.info('BXH', 'Nhập bảng xếp hạng', { guild: message.guild.id, so_khach: rows.length, by: message.author.id });
+            await message.reply({ content: `✅ Đã nhập **${rows.length}** khách vào bảng xếp hạng của server này (tổng ${formatVND(rows.reduce((a, r) => a + r.amount, 0))}).` + (bad.length ? `\n⚠️ Bỏ qua ${bad.length} dòng không đọc được: ${bad.map(b => `\`${b}\``).join(', ')}` : '') }).catch(() => null);
             await refreshLeaderboardMessage(client).catch(err => console.warn('[LEADERBOARD] Không cập nhật được:', err.message));
             return;
         }

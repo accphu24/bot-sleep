@@ -331,6 +331,16 @@ async function recordCustomerPurchase(userId, amount, ordersCount = 1) {
     );
 }
 
+// Đặt TỔNG chi tiêu = amount (không cộng dồn) để nhập bảng xếp hạng có sẵn; nhập lại nhiều lần vẫn ra cùng kết quả
+async function setCustomerTotal(userId, amount) {
+    const cur = await col('customers').findOne({ _id: String(userId) });
+    return col('customers').findOneAndUpdate(
+        { _id: String(userId) },
+        { $set: { totalSpent: amount, totalOrders: Math.max(cur?.totalOrders || 0, 1), updatedAt: now() } },
+        { upsert: true, returnDocument: 'after' }
+    );
+}
+
 async function getCustomer(userId) {
     return col('customers').findOne({ _id: String(userId) });
 }
@@ -387,6 +397,6 @@ module.exports = {
     getStaffQR, saveStaffQR,
     getTicket, isTicketChannel, saveTicket, updateTicket, deleteTicket, listTickets, getTicketByUsername, lockTicketConfirm, markTicketRevenue, countOpenTicketsByBuyer,
     getSetting, saveSetting, getSettingsWithPrefix, nextLegitNumber,
-    recordCustomerPurchase, getCustomer, getAllCustomers, getTopCustomers,
+    recordCustomerPurchase, setCustomerTotal, getCustomer, getAllCustomers, getTopCustomers,
     scheduleVouchReminder, getDueReminders, claimReminder, advanceReminder, deleteReminder, clearRemindersForBuyer
 };

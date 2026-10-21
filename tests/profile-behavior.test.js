@@ -72,6 +72,12 @@ async function runScenario(profileId) {
     reset(); await bot.handleMessage(mkMsg('.done <@999999999999999999> 150k', plain)); out.doneAnyChannel = snap();
     reset(); await bot.handleMessage(mkMsg('.done <@999999999999999999> 50k', plain)); out.doneAnyChannel2 = snap();
     out.customer = await db.getCustomer('999999999999999999');
+    const imp = '.nhapbxh\n<:e:1546837411345080362> **#1** <@867617837278167040> <:m:1546837446489014312> **5.346.010đ**\n`#2` **#2** <@917730708670259242> <:m:1546837446489014312> **4.740.000đ**';
+    reset(); await bot.handleMessage(mkMsg(imp, plain)); out.import1 = snap();
+    reset(); await bot.handleMessage(mkMsg(imp, plain)); out.import2 = snap();   // nhập lại lần 2
+    out.imported = [await db.getCustomer('867617837278167040'), await db.getCustomer('917730708670259242')];
+    const nonOwnerImp = mkMsg(imp, plain); nonOwnerImp.author.id = '300000000000000001'; nonOwnerImp.member = { id: '300000000000000001', guild, roles: { cache: new Map() } };
+    reset(); await bot.handleMessage(nonOwnerImp); out.importDenied = snap();
 
     console.log = realLog;
     process.stdout.write('\n@@RESULT@@' + JSON.stringify(out) + '\n');
@@ -115,6 +121,15 @@ t('.done @user <số tiền> dùng được ở kênh bất kỳ và cộng dồ
     for (const r of [drew, cartone]) {
         assert.ok(r.doneAnyChannel.send >= 1 && r.doneAnyChannel2.send >= 1);
         assert.strictEqual(r.customer.totalSpent, 300000);
+    }
+});
+t('.nhapbxh (Owner): nhập bảng từ dòng có emoji, đặt tổng chính xác, nhập lại KHÔNG cộng trùng; không phải Owner bị từ chối', () => {
+    for (const r of [drew, cartone]) {
+        assert.ok(r.import1.reply >= 1 && r.import2.reply >= 1);
+        assert.strictEqual(r.imported[0].totalSpent, 5346010);
+        assert.strictEqual(r.imported[1].totalSpent, 4740000);
+        assert.strictEqual(r.importDenied.reply, 1);
+        assert.strictEqual(r.imported[0].totalOrders, 1);
     }
 });
 t('.close: kênh có chữ "ticket" trong tên (không cần có trong DB) → Staff đóng được', () => {
