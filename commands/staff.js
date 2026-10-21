@@ -16,7 +16,10 @@ module.exports = {
             .addRoleOption(o => o.setName('role').setDescription('Role Staff').setRequired(true))),
 
     async execute(interaction) {
-        if (!isOwnerId(interaction.user.id)) {
+        if (!interaction.guildId) {
+            return await interaction.reply({ content: '❌ Staff được quản lý riêng từng server, hãy dùng lệnh này trong server cần cấu hình.', flags: MessageFlags.Ephemeral });
+        }
+        if (!isOwnerId(interaction.user.id, interaction.guild)) {
             return await interaction.reply({ content: '❌ Lệnh này chỉ dành riêng cho Owner!', flags: MessageFlags.Ephemeral });
         }
         const sub = interaction.options.getSubcommand();
@@ -25,8 +28,8 @@ module.exports = {
         if (sub === 'add') {
             const user = interaction.options.getUser('user');
             if (user.bot) return await reply('❌ Không thể thêm bot làm Staff!');
-            if (isOwnerId(user.id)) return await reply('ℹ️ Người này đã là Owner.');
-            const added = await addStaffUser(user.id);
+            if (isOwnerId(user.id, interaction.guild)) return await reply('ℹ️ Người này đã là Owner.');
+            const added = await addStaffUser(user.id, interaction.guildId);
             return await reply(added
                 ? `✅ Đã thêm <@${user.id}> làm Staff. (Ticket mới sẽ tự cấp quyền xem cho người này.)`
                 : `ℹ️ <@${user.id}> đã là Staff từ trước.`);
@@ -34,7 +37,7 @@ module.exports = {
 
         if (sub === 'remove') {
             const user = interaction.options.getUser('user');
-            const removed = await removeStaffUser(user.id);
+            const removed = await removeStaffUser(user.id, interaction.guildId);
             return await reply(removed
                 ? `✅ Đã bỏ quyền Staff của <@${user.id}>.`
                 : `ℹ️ <@${user.id}> không nằm trong danh sách Staff thêm bằng lệnh (nếu có role Staff thì vẫn là Staff).`);
@@ -46,17 +49,17 @@ module.exports = {
             return await reply(`✅ Đã đặt role Staff = <@&${role.id}>`);
         }
 
-        const users = getExtraStaff();
+        const users = getExtraStaff(interaction.guild);
         const roleId = cfg('STAFF_ROLE_ID', interaction.guild);
         const embed = new EmbedBuilder()
             .setTitle('👥 Danh sách Staff / Owner')
             .setColor('#00FFAA')
             .setDescription(
-                `**Owner:** <@${process.env.OWNER_ID}>${getExtraOwners().map(id => ` <@${id}>`).join('')}\n` +
+                `**Owner:** <@${process.env.OWNER_ID}>${getExtraOwners(interaction.guild).map(id => ` <@${id}>`).join('')}\n` +
                 `**Role Staff:** ${roleId ? `<@&${roleId}>` : '*(chưa đặt)*'}\n` +
-                `**Staff thêm bằng /staff add (${users.length}):**\n` +
+                `**Staff thêm bằng /staff add ở server này (${users.length}):**\n` +
                 (users.length ? users.map(id => `• <@${id}>`).join('\n') : '*(trống)*'))
-            .setFooter({ text: 'Drew Store AutoBuy' });
+            .setFooter({ text: require('../utils/profile').current().name });
         await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     }
 };

@@ -3,11 +3,15 @@
   "version": "2.1.0",
   "description": "Bot Discord bán tài khoản Minecraft: card, ticket, VietQR, giao hàng qua DM",
   "main": "index.js",
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node index.js",
     "migrate": "node scripts/migrate-json-to-mongo.js",
-    "test": "node tests/run.js && node tests/milestones.test.js"
+    "test": "node tests/run.js && node tests/milestones.test.js && node tests/guild-isolation.test.js && node tests/permissions-guild.test.js && node tests/profile.test.js && node tests/profile-behavior.test.js",
+    "start:drew": "BOT_PROFILE=drew node index.js",
+    "start:cartone": "BOT_PROFILE=cartone node index.js"
   },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.100",

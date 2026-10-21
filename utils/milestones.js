@@ -3,7 +3,7 @@
 //   { mode: 'stack' | 'replace', tiers: [{ amount, roleId }] }  (tiers luôn sắp xếp tăng dần theo amount)
 //   stack   = giữ tất cả role các mốc đã đạt (mặc định)
 //   replace = chỉ giữ role của mốc CAO NHẤT đã đạt, role các mốc thấp hơn bị gỡ
-// Tổng chi tiêu (customers.totalSpent) là chung cho mọi server; role thì cấp riêng ở từng server có cấu hình mốc.
+// Tổng chi tiêu (customers.totalSpent) tính RIÊNG từng server (dữ liệu tách theo server); role cũng cấp riêng ở từng server.
 const db = require('./db');
 const { log, errInfo, hint, trace } = require('./logger');
 
@@ -131,10 +131,15 @@ async function applyToGuild(guild, userId, totalSpent, { reason = '' } = {}) {
     }
 }
 
-// Cấp role mốc cho 1 khách ở TẤT CẢ server mà bot đang ở và có cấu hình mốc.
+// Cấp role mốc cho 1 khách. Đang trong ngữ cảnh 1 server (đa số trường hợp) thì chỉ cấp ở server đó,
+// vì totalSpent là tổng của server đó. Không có server trong ngữ cảnh (script / test) thì xét mọi server bot đang ở.
 async function applyMilestones(client, userId, totalSpent, opts = {}) {
     const out = [];
-    for (const guild of client.guilds.cache.values()) {
+    const only = db.currentGuildId?.();
+    const guilds = only
+        ? [client.guilds.cache.get(only)].filter(Boolean)
+        : [...client.guilds.cache.values()];
+    for (const guild of guilds) {
         const r = await applyToGuild(guild, userId, totalSpent, opts);
         if (r.status !== 'no-config') out.push(r);
     }

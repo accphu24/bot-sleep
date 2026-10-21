@@ -13,7 +13,7 @@ module.exports = {
                 .setRequired(true)),
 
     async execute(interaction) {
-        const isOwner = isOwnerId(interaction.user.id);
+        const isOwner = isOwnerId(interaction.user.id, interaction.guild);
 
         if (!isOwner) {
             return await interaction.reply({

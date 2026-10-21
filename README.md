@@ -2,6 +2,29 @@
 
 Bot Discord bán tài khoản Minecraft: card ảnh, ticket, VietQR, giao hàng qua DM. Dữ liệu lưu ở MongoDB.
 
+## Chạy 2 bot cho 2 server (BOT_PROFILE)
+Cùng một code, mỗi server một bot riêng (token riêng), chọn bằng biến `BOT_PROFILE`. File mẫu: `.env.drew.example`, `.env.cartone.example`.
+
+| Tính năng | `drew` (server Drew) | `cartone` (server Cartone) |
+|---|---|---|
+| Auto buy (BUY, ticket, Confirm, kho acc, VietQR, `/stock`, `/add_acc`, `/set_qr`, `/restock`, `/skin`, `/moc_role`, `.panel`, `.close`, `.resend`, `.vietqr`, nhắc vouch) | ✅ | ✅ |
+| Bảng xếp hạng + ghi doanh thu (`.bxh`, `/leaderboard`, `.done`, `/done`), **dữ liệu riêng từng server** | ✅ | ✅ |
+| `sold`, `/set_kenhsold`, `.taokenh`, `.xoakenh` | ✅ | ✅ |
+| Auto react legit (3 emoji) | ✅ | ✅ |
+| Đếm số legit + đổi tên kênh `『✅』𝙇𝙀𝙂𝙄𝙏-<số>` | ❌ (chỉ react) | ✅ (luôn đếm) |
+| Tên thương hiệu trong embed / DM | Drew Store | Cartone |
+
+- `.done @user <số tiền>` dùng được ở **mọi kênh** (vd `.done @khách 150k`). Riêng trong ticket đã ghi doanh thu (Confirm hoặc `.done` trước đó) thì bị chặn để không cộng trùng.
+- `.close` (Staff/Owner): đóng được ticket trong DB **và mọi kênh có chữ `ticket` trong tên** (không phân biệt hoa thường). Kênh không có chữ ticket thì bot bỏ qua; người không phải Staff gõ `.close` ở kênh ticket sẽ bị từ chối.
+
+- Chế độ `drew` / `cartone` **ép cứng** việc đếm legit: `/config legit_dem` không đổi được. Không đặt `BOT_PROFILE` (hoặc `full`) thì chạy như bản cũ, đủ mọi tính năng.
+- `ALLOWED_GUILD_IDS=<id server>`: bot chỉ phục vụ server đó, bỏ qua mọi server khác (bot vẫn có thể ở server khác chỉ để dùng emoji).
+- Bot không có tính năng nào thì lệnh slash đó **không được đăng ký** (lệnh cũ tự biến mất sau lần khởi động đầu), nút / lệnh prefix tương ứng bị bỏ qua.
+- **Dữ liệu:** cho cả 2 bot dùng chung `MONGODB_URI`, `MONGODB_DB`, `MAIN_GUILD_ID`, `DATA_ENCRYPTION_KEY`, `OWNER_ID` như cũ thì dữ liệu mỗi server (khách, bxh, legit đếm, cấu hình) vẫn nguyên, không phải chuyển gì. Mỗi bot chỉ đọc / ghi dữ liệu của server mình.
+- **Triển khai:** tạo 2 service Railway cùng repo, khác `DISCORD_TOKEN`, `CLIENT_ID`, `BOT_PROFILE`, `ALLOWED_GUILD_IDS`. Application Discord của mỗi bot đều phải bật **Message Content Intent**.
+- **Emoji legit:** 3 emoji react là emoji của Drew Store. Bot Cartone phải ở chung server chứa emoji đó (đặt `ALLOWED_GUILD_IDS` để nó không hoạt động ở đó), hoặc up emoji vào server Cartone rồi đặt `LEGIT_REACT_EMOJIS`. Chạy `/config check_emoji` để kiểm tra.
+- `npm test` có thêm `tests/profile.test.js` và `tests/profile-behavior.test.js` (mô phỏng tin nhắn cho từng chế độ).
+
 ## Cài đặt
 1. `npm install`
 2. Sao chép `.env.example` thành `.env` rồi điền giá trị (**không bao giờ commit `.env`**).
@@ -17,9 +40,23 @@ Bot Discord bán tài khoản Minecraft: card ảnh, ticket, VietQR, giao hàng 
 **Nên có:** `STAFF_ROLE_ID`, `STOCK_ID`, `TICKET_CATEGORY_ID`, `SOLD_CATEGORY_ID`, `BILL_ID`, `TRANSCRIPT_ID`, `AUTOREACTER_VOUCH` (kênh legit),
 `KENH_VOUCH`, `KENH_YOUTUBE`, `KENH_2FA`, `KENH_LOCK`, `LINK_QR`, `LEGIT_START`, `VOUCH_MENTION_ID`
 
-**Tùy chọn:** `MONGODB_DB` (mặc định `autobuy`), `MAX_OPEN_TICKETS` (2), `LEGIT_COOLDOWN_SEC` (20), `LEGIT_REACT_EMOJIS`, `EMOJI_INFO/ONLINE/OFFLINE`
+**Tùy chọn:** `BOT_PROFILE` (`drew` | `cartone`, xem mục *Chạy 2 bot*), `ALLOWED_GUILD_IDS`, `BXH_COOLDOWN_SEC` (30), `MAIN_GUILD_ID` (server chính, mặc định `1462789815333289986`, xem mục *Dữ liệu theo server*), `MONGODB_DB` (mặc định `autobuy`), `MAX_OPEN_TICKETS` (2), `LEGIT_COOLDOWN_SEC` (20), `LEGIT_REACT_EMOJIS`, `EMOJI_INFO/ONLINE/OFFLINE`
 
 Các biến kênh/danh mục và `STAFF_ROLE_ID` cũng đặt được ngay trong Discord bằng `/config` và `/staff` (chỉ Owner), giá trị đặt bằng lệnh ưu tiên hơn biến môi trường.
+
+## Dữ liệu theo server
+Mỗi server có dữ liệu riêng: **khách + bảng xếp hạng + tổng tiền, kho tài khoản, ticket, QR (`/set_qr`), nhắc vouch**.
+- **Server chính** (`MAIN_GUILD_ID`) dùng database cũ (`MONGODB_DB`), nên toàn bộ dữ liệu trước đây tự thuộc về server này, không phải chuyển gì.
+- Server khác tự tạo database `<MONGODB_DB>_<ID server>` ở lần đầu bot hoạt động ở đó (tài khoản MongoDB cần quyền tạo database; Railway mặc định có).
+- Cấu hình (`/config`, `/staff`, `/owner`, bộ đếm legit, mốc role...) vẫn lưu chung trong `settings` vì khóa của chúng đã có ID server.
+- Role mốc chi tiêu chỉ cấp ở server nơi khách mua, dựa trên tổng tiền của server đó.
+- `npm run migrate` luôn ghi vào server chính.
+
+### Phân quyền theo server
+- **Owner gốc** (`OWNER_ID`) có quyền Owner ở **mọi** server.
+- **Owner phụ** (`/owner add`) và **Staff** (`/staff add`, `/staff role`) chỉ có quyền ở **server nơi được thêm**. Chạy các lệnh này ngay trong server cần phân quyền.
+- Danh sách chung cũ (`STAFF_USERS`, `OWNER_USERS`) tự chuyển thành danh sách của server chính ở lần khởi động đầu tiên sau khi cập nhật.
+- `.bxh` giới hạn mỗi người 1 lần / 30 giây (đổi bằng biến `BXH_COOLDOWN_SEC`, `0` = tắt). Staff/Owner không bị giới hạn.
 
 ## Ticket
 - Ticket **chỉ đóng khi Staff/Owner gõ `.close`** trong kênh ticket. Khách nhắn "legit" không làm ticket bị xóa.

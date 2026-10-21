@@ -87,7 +87,7 @@ async function handlePanelButton(interaction, client) {
     ];
     const added = new Set([user.id, client.user.id]);
     if (isValidSnowflake(staffRoleId)) overwrites.push({ id: staffRoleId.trim(), type: OverwriteType.Role, allow: rw });
-    const staffIds = [...getExtraStaff(), ...getExtraOwners()];
+    const staffIds = [...getExtraStaff(guild), ...getExtraOwners(guild)];
     if (isValidSnowflake(ownerId)) staffIds.push(ownerId.trim());
     for (const id of staffIds) {
         if (added.has(id)) continue;
@@ -124,7 +124,7 @@ async function handlePanelButton(interaction, client) {
                 `Xin chào <@${user.id}>!\n\n${type.intro}\n\n` +
                 '*Vui lòng chờ staff phản hồi. Staff/Owner gõ `.close` để đóng ticket.*'
             )
-            .setFooter({ text: 'Drew Store • Ticket hỗ trợ' })
+            .setFooter({ text: `${require('./profile').brand()} • Ticket hỗ trợ` })
             .setTimestamp();
 
         const pings = isValidSnowflake(staffRoleId) ? ` <@&${staffRoleId.trim()}>` : '';

@@ -22,7 +22,7 @@ async function buildLeaderboardPayload(guild) {
 
     if (top.length === 0) {
         const emptyEmbed = new EmbedBuilder()
-            .setAuthor({ name: 'Drew Store • Bảng Xếp Hạng Khách Hàng', iconURL: guild?.iconURL() || undefined })
+            .setAuthor({ name: `${require('../utils/profile').brand()} • Bảng Xếp Hạng Khách Hàng`, iconURL: guild?.iconURL() || undefined })
             .setTitle('🏆 TOP KHÁCH HÀNG THÂN THIẾT')
             .setColor('#FFD700')
             .setDescription('📊 Hiện tại chưa có dữ liệu giao dịch nào được ghi nhận!')
@@ -38,7 +38,7 @@ async function buildLeaderboardPayload(guild) {
     });
 
     const embed = new EmbedBuilder()
-        .setAuthor({ name: 'Drew Store • Bảng Xếp Hạng Khách Hàng', iconURL: guild?.iconURL() || undefined })
+        .setAuthor({ name: `${require('../utils/profile').brand()} • Bảng Xếp Hạng Khách Hàng`, iconURL: guild?.iconURL() || undefined })
         .setTitle('🏆 TOP KHÁCH HÀNG THÂN THIẾT')
         .setColor('#FFD700')
         .setDescription(
@@ -46,7 +46,7 @@ async function buildLeaderboardPayload(guild) {
             lines.join('\n\n')
         )
         .setFooter({
-            text: 'Cảm ơn tất cả quý khách đã luôn tin tưởng và ủng hộ Drew Store! • Bảng tự cập nhật khi có đơn mới'
+            text: `Cảm ơn tất cả quý khách đã luôn tin tưởng và ủng hộ ${require('../utils/profile').brand()}! • Bảng tự cập nhật khi có đơn mới`
         })
         .setTimestamp();
 
@@ -58,16 +58,25 @@ async function buildLeaderboardPayload(guild) {
 const LB_PREFIX = 'LEADERBOARD_MESSAGE';
 async function refreshLeaderboardMessage(client) {
     const refs = await db.getSettingsWithPrefix(LB_PREFIX);   // gồm khóa cũ LEADERBOARD_MESSAGE và LEADERBOARD_MESSAGE_<serverId>
+    const scoped = db.currentGuildId();                        // đang trong 1 server (vd sau .done): chỉ sửa bảng của server đó
     const seen = new Set();
     let updated = false;
     for (const doc of refs) {
         const ref = doc.value;
         if (!ref || !ref.channelId || !ref.messageId || seen.has(ref.messageId)) continue;
+        // Khóa dạng LEADERBOARD_MESSAGE_<serverId> (khóa cũ không có ID = server chính). Bảng của server mà bot này không ở
+        // (vd bot kia dùng chung MongoDB) thì bỏ qua, tuyệt đối không xóa tham chiếu của nó.
+        const keyGuild = String(doc._id).slice(LB_PREFIX.length).replace(/^_/, '') || db.MAIN_GUILD_ID;
+        if (client.guilds?.cache?.size && !client.guilds.cache.has(keyGuild)) continue;
         seen.add(ref.messageId);
         try {
             const channel = await client.channels.fetch(ref.channelId);
+            const guildId = channel.guild?.id || channel.guildId;
+            if (scoped && guildId !== scoped) continue;
             const message = await channel.messages.fetch(ref.messageId);
-            await message.edit(await buildLeaderboardPayload(channel.guild));
+            // Mỗi bảng đọc dữ liệu khách của ĐÚNG server chứa nó
+            const payload = await db.withGuild(guildId, () => buildLeaderboardPayload(channel.guild));
+            await message.edit(payload);
             updated = true;
         } catch (err) {
             // Tin nhắn / kênh đã bị xóa: quên bảng này. Lỗi tạm thời (mạng, rate limit...): giữ lại để lần sau thử tiếp.
@@ -81,7 +90,7 @@ async function refreshLeaderboardMessage(client) {
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('leaderboard')
-        .setDescription('Bảng xếp hạng Top khách hàng mua nhiều nhất tại Drew Store'),
+        .setDescription('Bảng xếp hạng Top khách hàng mua nhiều nhất'),
 
     buildLeaderboardPayload,
     refreshLeaderboardMessage,

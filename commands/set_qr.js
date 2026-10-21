@@ -1,7 +1,7 @@
 const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const { saveStaffQR } = require('../utils/db');
 const { checkStaffOrOwner } = require('../utils/permissions');
-const { BANK_MAP } = require('../utils/vietqr');
+const { resolveBankCode } = require('../utils/vietqr');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -28,8 +28,7 @@ module.exports = {
             });
         }
 
-        let bankName = interaction.options.getString('bank_name').trim().toUpperCase().replace(/\s+/g, '');
-        if (BANK_MAP[bankName]) bankName = BANK_MAP[bankName];
+        const bankName = resolveBankCode(interaction.options.getString('bank_name'));
 
         const accountNumber = interaction.options.getString('account_number').trim().replace(/\s+/g, '');
         const bankType = interaction.options.getString('bank_type').trim();

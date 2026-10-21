@@ -52,14 +52,14 @@ module.exports = {
 
         const embed = new EmbedBuilder()
             .setAuthor({ 
-                name: 'Drew Store', 
+                name: require('../utils/profile').brand(), 
                 iconURL: guild.iconURL() || undefined 
             })
             .setTitle('Stock Acconut MFA')
             .setColor('#00FFAA')
             .setDescription(descriptionContent)
             .setFooter({ 
-                text: `Tổng số: ${totalAccounts} tài khoản • Drew Store`,
+                text: `Tổng số: ${totalAccounts} tài khoản • ${require('../utils/profile').brand()}`,
                 iconURL: interaction.client.user.displayAvatarURL() || undefined
             })
             .setTimestamp();

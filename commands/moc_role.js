@@ -40,7 +40,7 @@ module.exports = {
             .addUserOption(o => o.setName('khach').setDescription('Khách cần kiểm tra').setRequired(true))),
 
     async execute(interaction) {
-        if (!isOwnerId(interaction.user.id)) {
+        if (!isOwnerId(interaction.user.id, interaction.guild)) {
             return await interaction.reply({ content: '❌ Lệnh này chỉ dành riêng cho Owner!', flags: EPHEMERAL });
         }
         if (!interaction.guild) {

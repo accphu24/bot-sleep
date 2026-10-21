@@ -30,7 +30,7 @@ module.exports = {
                 .setRequired(true).setMinValue(0))),
 
     async execute(interaction) {
-        if (!isOwnerId(interaction.user.id)) {
+        if (!isOwnerId(interaction.user.id, interaction.guild)) {
             return await interaction.reply({ content: '❌ Lệnh này chỉ dành riêng cho Owner!', flags: MessageFlags.Ephemeral });
         }
         const sub = interaction.options.getSubcommand();
@@ -110,6 +110,15 @@ module.exports = {
         if (sub === 'legit_dem') {
             if (!interaction.guildId) {
                 return await interaction.reply({ content: '❌ Lệnh này chỉ dùng trong server.', flags: MessageFlags.Ephemeral });
+            }
+            const forced = require('../utils/profile').forcedLegitCount();
+            if (forced !== null) {
+                return await interaction.reply({
+                    content: forced
+                        ? '🔒 Bot này (chế độ **cartone**) **luôn đếm số legit**, không tắt được bằng lệnh.'
+                        : '🔒 Bot này (chế độ **drew**) **không đếm số legit**, chỉ react emoji. Không bật được bằng lệnh.',
+                    flags: MessageFlags.Ephemeral
+                });
             }
             const on = interaction.options.getString('trangthai') === 'on';
             await setLegitEnabled(interaction.guildId, on);

@@ -28,10 +28,7 @@ async function loadConfig() {
     for (const s of await db.getSettingsWithPrefix('CFG_')) {
         runtime.setOverride(s._id.slice('CFG_'.length), s.value);
     }
-    const staff = await db.getSetting('STAFF_USERS', []);
-    runtime.setExtraStaff(Array.isArray(staff) ? staff : []);
-    const owners = await db.getSetting('OWNER_USERS', []);
-    runtime.setExtraOwners(Array.isArray(owners) ? owners : []);
+    await loadExtraLists();
 
     runtime.clearLegitEnabled();
     for (const s of await db.getSettingsWithPrefix(LEGIT_ENABLED_PREFIX)) {
@@ -70,38 +67,47 @@ async function setConfig(name, value, guildId) {
     runtime.setOverride(name, value);
 }
 
-async function addStaffUser(userId) {
-    const list = new Set(runtime.getExtraStaff());
-    const had = list.has(String(userId));
-    list.add(String(userId));
-    await db.saveSetting('STAFF_USERS', [...list]);
-    runtime.setExtraStaff([...list]);
-    return !had;
+// ----- Staff / Owner phụ theo TỪNG server: settings._id = STAFF_USERS@<guildId> / OWNER_USERS@<guildId> -----
+const listKey = (kind, guildId) => `${kind}@${guildId}`;
+
+async function loadExtraLists() {
+    runtime.clearExtraLists();
+    // Bản cũ lưu 1 danh sách chung (STAFF_USERS / OWNER_USERS). Dữ liệu cũ thuộc server chính: chuyển sang khóa của server chính 1 lần.
+    for (const kind of ['STAFF_USERS', 'OWNER_USERS']) {
+        const legacy = await db.getSetting(kind, null);
+        if (legacy === null) continue;
+        const mainKey = listKey(kind, db.MAIN_GUILD_ID);
+        const existing = await db.getSetting(mainKey, null);
+        const merged = [...new Set([...(Array.isArray(existing) ? existing : []), ...(Array.isArray(legacy) ? legacy : [])].map(String))];
+        if (merged.length) await db.saveSetting(mainKey, merged);
+        await db.saveSetting(kind, null);
+    }
+    for (const kind of ['STAFF_USERS', 'OWNER_USERS']) {
+        for (const s of await db.getSettingsWithPrefix(`${kind}@`)) {
+            const gid = s._id.slice(kind.length + 1);
+            const ids = Array.isArray(s.value) ? s.value : [];
+            if (kind === 'STAFF_USERS') runtime.setExtraStaff(gid, ids);
+            else runtime.setExtraOwners(gid, ids);
+        }
+    }
 }
 
-async function removeStaffUser(userId) {
-    const list = new Set(runtime.getExtraStaff());
-    const had = list.delete(String(userId));
-    await db.saveSetting('STAFF_USERS', [...list]);
-    runtime.setExtraStaff([...list]);
-    return had;
+async function changeList(kind, guildId, userId, add) {
+    if (!guildId) throw new Error('Thiếu ID server');
+    const get = kind === 'STAFF_USERS' ? runtime.getExtraStaff : runtime.getExtraOwners;
+    const set = kind === 'STAFF_USERS' ? runtime.setExtraStaff : runtime.setExtraOwners;
+    const list = new Set(get(guildId));
+    const id = String(userId);
+    const changed = add ? !list.has(id) : list.delete(id);
+    if (add) list.add(id);
+    await db.saveSetting(listKey(kind, guildId), list.size ? [...list] : null);
+    set(guildId, [...list]);
+    return changed;
 }
 
-async function addOwnerUser(userId) {
-    const list = new Set(runtime.getExtraOwners());
-    const had = list.has(String(userId));
-    list.add(String(userId));
-    await db.saveSetting('OWNER_USERS', [...list]);
-    runtime.setExtraOwners([...list]);
-    return !had;
-}
-
-async function removeOwnerUser(userId) {
-    const list = new Set(runtime.getExtraOwners());
-    const had = list.delete(String(userId));
-    await db.saveSetting('OWNER_USERS', [...list]);
-    runtime.setExtraOwners([...list]);
-    return had;
-}
+const addStaffUser = (userId, guildId) => changeList('STAFF_USERS', guildId, userId, true);
+const removeStaffUser = (userId, guildId) => changeList('STAFF_USERS', guildId, userId, false);
+const addOwnerUser = (userId, guildId) => changeList('OWNER_USERS', guildId, userId, true);
+const removeOwnerUser = (userId, guildId) => changeList('OWNER_USERS', guildId, userId, false);
 
 module.exports = { setLegitChannel, setLegitEnabled, addOwnerUser, removeOwnerUser, CONFIG_KEYS, loadConfig, setConfig, addStaffUser, removeStaffUser };

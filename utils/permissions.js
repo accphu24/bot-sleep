@@ -9,8 +9,9 @@ function isPrimaryOwner(userId) {
 }
 
 // Owner gốc hoặc Owner phụ (thêm bằng /owner add) đều có đủ quyền Owner
-function isOwnerId(userId) {
-    return isPrimaryOwner(userId) || isExtraOwner(userId);
+// guild = server (đối tượng hoặc ID). Owner phụ chỉ có quyền ở server mà họ được thêm; Owner gốc có quyền ở mọi server.
+function isOwnerId(userId, guild) {
+    return isPrimaryOwner(userId) || isExtraOwner(userId, guild);
 }
 
 // Owner, hoặc có role Staff, hoặc được Owner thêm bằng /staff add
@@ -18,7 +19,7 @@ function checkStaffOrOwner(member) {
     if (!member) return false;
     const staffRoleId = cfg('STAFF_ROLE_ID', member.guild);
     const hasRole = isValidSnowflake(staffRoleId) && Boolean(member.roles?.cache?.has(staffRoleId));
-    return isOwnerId(member.id) || hasRole || isExtraStaff(member.id);
+    return isOwnerId(member.id, member.guild) || hasRole || isExtraStaff(member.id, member.guild);
 }
 
 module.exports = { isValidSnowflake, isPrimaryOwner, isOwnerId, checkStaffOrOwner };

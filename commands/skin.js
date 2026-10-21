@@ -82,7 +82,7 @@ module.exports = {
                 `*Hình ảnh hiển thị Skin*`
             )
             .setThumbnail(headAvatarUrl)
-            .setFooter({ text: 'Drew Store • Skin Viewer' })
+            .setFooter({ text: `${require('../utils/profile').brand()} • Skin Viewer` })
             .setTimestamp();
 
         // Nếu tải buffer thành công thì gán trực tiếp qua attachment (đảm bảo 100% luôn hiện hình)

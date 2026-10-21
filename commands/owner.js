@@ -15,20 +15,21 @@ module.exports = {
 
     async execute(interaction) {
         const reply = (content) => interaction.reply({ content, flags: MessageFlags.Ephemeral });
-        if (!isOwnerId(interaction.user.id)) return await reply('❌ Lệnh này chỉ dành cho Owner!');
+        if (!interaction.guildId) return await reply('❌ Owner phụ được quản lý riêng từng server, hãy dùng lệnh này trong server cần cấu hình.');
+        if (!isOwnerId(interaction.user.id, interaction.guild)) return await reply('❌ Lệnh này chỉ dành cho Owner!');
 
         const sub = interaction.options.getSubcommand();
 
         if (sub === 'list') {
-            const owners = getExtraOwners();
+            const owners = getExtraOwners(interaction.guild);
             const embed = new EmbedBuilder()
                 .setTitle('👑 Danh sách Owner')
                 .setColor('#FFD700')
                 .setDescription(
                     `**Owner gốc:** <@${process.env.OWNER_ID}>\n` +
-                    `**Owner phụ (${owners.length}):**\n` +
+                    `**Owner phụ ở server này (${owners.length}):**\n` +
                     (owners.length ? owners.map(id => `• <@${id}>`).join('\n') : '*(trống)*'))
-                .setFooter({ text: 'Drew Store AutoBuy' });
+                .setFooter({ text: require('../utils/profile').current().name });
             return await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
         }
 
@@ -41,14 +42,14 @@ module.exports = {
         if (sub === 'add') {
             if (user.bot) return await reply('❌ Không thể thêm bot làm Owner!');
             if (isPrimaryOwner(user.id)) return await reply('ℹ️ Người này đã là Owner gốc.');
-            const added = await addOwnerUser(user.id);
+            const added = await addOwnerUser(user.id, interaction.guildId);
             return await reply(added
-                ? `✅ Đã thêm <@${user.id}> làm **Owner phụ**. Người này có đủ quyền Owner (/config, /staff, đóng cưỡng bức ticket...).`
+                ? `✅ Đã thêm <@${user.id}> làm **Owner phụ của server này**. Người này có đủ quyền Owner (chỉ trong server này) (/config, /staff, đóng cưỡng bức ticket...).`
                 : `ℹ️ <@${user.id}> đã là Owner phụ từ trước.`);
         }
 
         if (isPrimaryOwner(user.id)) return await reply('❌ Không thể bỏ Owner gốc!');
-        const removed = await removeOwnerUser(user.id);
+        const removed = await removeOwnerUser(user.id, interaction.guildId);
         return await reply(removed
             ? `✅ Đã bỏ quyền Owner phụ của <@${user.id}>.`
             : `ℹ️ <@${user.id}> không phải Owner phụ.`);

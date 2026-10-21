@@ -25,11 +25,12 @@ const { renderCard } = require('./utils/cardRenderer');
 const { parseAmount, formatVND } = require('./utils/money');
 const { parseAccountForm, maskEmail } = require('./utils/accountForm');
 const { isValidSnowflake, isOwnerId, checkStaffOrOwner } = require('./utils/permissions');
-const { generateTransferMemo, buildVietQRUrl } = require('./utils/vietqr');
+const { generateTransferMemo, buildVietQRUrl, prepareQrImage } = require('./utils/vietqr');
 const { buildCardRow } = require('./utils/cardButtons');
 const { sendTranscript } = require('./utils/transcript');
 const { stickyCache } = require('./utils/cache');
 const { buildHelpEmbed } = require('./utils/help');
+const profile = require('./utils/profile');
 const { isPanelButton, buildPanelPayload, handlePanelButton } = require('./utils/panel');
 const { buildLeaderboardPayload, refreshLeaderboardMessage } = require('./commands/leaderboard');
 const { processDone } = require('./commands/done');
@@ -60,7 +61,7 @@ const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('
 
 for (const file of commandFiles) {
     const command = require(path.join(commandsPath, file));
-    if ('data' in command && 'execute' in command) {
+    if ('data' in command && 'execute' in command && profile.commandEnabled(command.data.name)) {
         client.commands.set(command.data.name, command);
         commandsJson.push(command.data.toJSON());
     }
@@ -190,7 +191,7 @@ function buildCredentialsEmbed(account, creds, guild) {
 
     return new EmbedBuilder()
         .setAuthor({
-            name: 'Drew Store - Giao Dịch Hoàn Tất',
+            name: `${profile.brand()} - Giao Dịch Hoàn Tất`,
             iconURL: guild?.iconURL() || undefined
         })
         .setTitle(`🎉 THÔNG TIN TÀI KHOẢN: ${targetUsername}`)
@@ -214,11 +215,11 @@ function buildCredentialsEmbed(account, creds, guild) {
             `${ytRef}\n` +
             `${faRef}\n` +
             `${lockRef}\n\n` +
-            `## Hãy nhớ VOUCH cho Drew Store\n` +
+            `## Hãy nhớ VOUCH cho ${profile.brand()}\n` +
             `${vouchRef}`
         )
         .setFooter({
-            text: 'Drew Store • Cảm ơn bạn đã tin tưởng và ủng hộ!',
+            text: `${profile.brand()} • Cảm ơn bạn đã tin tưởng và ủng hộ!`,
             iconURL: guild?.iconURL() || undefined
         })
         .setTimestamp();
@@ -228,7 +229,7 @@ async function sendCredentialsDM(user, account, creds, guild) {
     if (!user || !creds) return false;
     try {
         await user.send({
-            content: `Cảm ơn bạn đã mua tài khoản tại **Drew Store**! Dưới đây là thông tin tài khoản của bạn:`,
+            content: `Cảm ơn bạn đã mua tài khoản tại **${profile.brand()}**! Dưới đây là thông tin tài khoản của bạn:`,
             embeds: [buildCredentialsEmbed(account, creds, guild)]
         });
         return true;
@@ -240,7 +241,19 @@ async function sendCredentialsDM(user, account, creds, guild) {
 // ==========================================
 // NHẮC VOUCH (lưu trong DB, mỗi 60 giây quét 1 lần)
 // ==========================================
+// Quét nhắc vouch của TỪNG server (mỗi server có kho nhắc riêng)
 async function runVouchReminders() {
+    for (const gid of guildIdsToSweep()) {
+        await db.withGuild(gid, () => runVouchRemindersForCurrentGuild()).catch(err => console.error('[Lỗi quét nhắc vouch]:', gid, err.message));
+    }
+}
+
+// Server cần quét: server chính + mọi server bot đang ở
+function guildIdsToSweep() {
+    return [...new Set([db.MAIN_GUILD_ID, ...(client.guilds?.cache ? client.guilds.cache.keys() : [])])];
+}
+
+async function runVouchRemindersForCurrentGuild() {
     const due = await db.getDueReminders(Date.now());
     for (const r of due) {
         try {
@@ -249,7 +262,7 @@ async function runVouchReminders() {
             if (user) {
                 const template = `+1 legit <@${r.sellerId || process.env.OWNER_ID}> mfa`;
                 await user.send({
-                    content: `👋 <@${r.buyerId}> bạn đừng quên vouch cho **Drew Store** nhé!\n\n**Mẫu copy:**\n\`\`\`text\n${template}\n\`\`\``
+                    content: `👋 <@${r.buyerId}> bạn đừng quên vouch cho **${profile.brand()}** nhé!\n\n**Mẫu copy:**\n\`\`\`text\n${template}\n\`\`\``
                 }).catch(() => null);
             }
             const sent = (r.count || 0) + 1;
@@ -268,18 +281,22 @@ async function runVouchReminders() {
 // DỌN DẸP KHI KHỞI ĐỘNG (bot tắt đột ngột có thể để lại tài khoản kẹt PROCESSING)
 // ==========================================
 async function reconcileOnStartup() {
-    try {
-        for (const t of await db.listTickets()) {
-            if (!(await channelExists(t._id))) await handleCancelTicket(t._id);
+    for (const gid of guildIdsToSweep()) {
+        try {
+            await db.withGuild(gid, async () => {
+                for (const t of await db.listTickets()) {
+                    if (!(await channelExists(t._id))) await handleCancelTicket(t._id);
+                }
+                for (const a of await db.findAccounts({ status: 'PROCESSING' })) {
+                    const ticket = await db.getTicketByUsername(a._id);
+                    if (!ticket) {
+                        if (await db.releaseAccount(a._id)) await restoreAvailableCard(a, null);
+                    }
+                }
+            });
+        } catch (err) {
+            console.error('[LỖI RECONCILE]:', gid, err);
         }
-        for (const a of await db.findAccounts({ status: 'PROCESSING' })) {
-            const ticket = await db.getTicketByUsername(a._id);
-            if (!ticket) {
-                if (await db.releaseAccount(a._id)) await restoreAvailableCard(a, null);
-            }
-        }
-    } catch (err) {
-        console.error('[LỖI RECONCILE]:', err);
     }
 }
 
@@ -368,7 +385,7 @@ async function handleBuy(interaction) {
             alreadyAdded.add(sellerId.trim());
         }
         // Staff thêm bằng /staff add cần thấy ticket để dùng .close
-        for (const staffUserId of [...getExtraStaff(), ...getExtraOwners()]) {
+        for (const staffUserId of [...getExtraStaff(guild), ...getExtraOwners(guild)]) {
             if (alreadyAdded.has(staffUserId) || staffUserId === ownerId?.trim()) continue;
             permissionOverwrites.push({ id: staffUserId, type: OverwriteType.Member, allow: rw });
             alreadyAdded.add(staffUserId);
@@ -421,9 +438,17 @@ async function handleBuy(interaction) {
         let qrInfoText = '';
         const isSellerOwner = isValidSnowflake(ownerId) && sellerId === ownerId;
         const targetSellerId = sellerId || ownerId;
-        const sellerQR = isValidSnowflake(targetSellerId) ? await db.getStaffQR(targetSellerId) : null;
+        // Thứ tự ưu tiên: QR người bán -> QR ngân hàng của Owner (/set_qr) -> ảnh LINK_QR -> báo chưa cài
+        let sellerQR = isValidSnowflake(targetSellerId) ? await db.getStaffQR(targetSellerId).catch(() => null) : null;
+        let qrSource = 'nguoi_ban';
+        if (!(sellerQR && sellerQR.bankName && sellerQR.accountNumber) && isValidSnowflake(ownerId) && ownerId.trim() !== targetSellerId) {
+            const ownerQR = await db.getStaffQR(ownerId.trim()).catch(() => null);
+            if (ownerQR && ownerQR.bankName && ownerQR.accountNumber) { sellerQR = ownerQR; qrSource = 'owner'; }
+        }
+        const hasBankQR = !!(sellerQR && sellerQR.bankName && sellerQR.accountNumber);
+        const linkQr = (process.env.LINK_QR || '').trim();
 
-        if (sellerQR && sellerQR.bankName && sellerQR.accountNumber) {
+        if (hasBankQR) {
             qrImageUrl = buildVietQRUrl(sellerQR.bankName, sellerQR.accountNumber, numericAmount, transferMemo, sellerQR.bankType);
             qrInfoText =
                 `🏦 **Ngân hàng:** \`${sellerQR.bankName}\`\n` +
@@ -431,18 +456,21 @@ async function handleBuy(interaction) {
                 `👤 **Chủ tài khoản:** \`${sellerQR.bankType || 'N/A'}\`\n` +
                 `💰 **Số tiền:** \`${displayPrice}\`\n` +
                 `📝 **Nội dung CK:** \`${transferMemo}\``;
-        } else if (isSellerOwner && process.env.LINK_QR) {
-            qrImageUrl = process.env.LINK_QR;
+        } else if (linkQr) {
+            qrSource = 'LINK_QR';
+            qrImageUrl = linkQr;
             qrInfoText =
                 `💰 **Số tiền:** \`${displayPrice}\`\n` +
                 `📝 **Nội dung CK:** \`${transferMemo}\`\n\n` +
-                `*Mã QR thanh toán chính thức của Owner Shop:*`;
+                `*Mã QR thanh toán của Shop (nhớ ghi đúng nội dung chuyển khoản):*`;
         } else {
+            qrSource = 'khong_co';
             qrInfoText =
                 `💰 **Số tiền:** \`${displayPrice}\`\n` +
                 `📝 **Nội dung CK:** \`${transferMemo}\`\n\n` +
                 `⚠ Người bán (<@${sellerId || ownerId}>) chưa cài đặt mã QR ngân hàng bằng lệnh \`/set_qr\`! Vui lòng gửi STK trực tiếp tại đây.`;
         }
+        log.info('QR', 'Chọn nguồn QR cho ticket', { nguon: qrSource, nguoiBan: targetSellerId, coAnh: !!qrImageUrl, url: qrImageUrl || undefined });
 
         const embed = new EmbedBuilder()
             .setTitle(`🛒 ĐƠN MUA TÀI KHOẢN: ${account.username.toUpperCase()}`)
@@ -453,12 +481,11 @@ async function handleBuy(interaction) {
                 `*Vui lòng thanh toán đúng số tiền và nội dung chuyển khoản trên, sau đó gửi ảnh bill tại kênh này!*\n` +
                 `*Staff/Owner gõ \`.close\` để đóng ticket.*`
             )
-            .setFooter({ text: 'Drew Store AutoBuy • Vui lòng chờ người bán xác nhận' })
+            .setFooter({ text: `${profile.current().name} • Vui lòng chờ người bán xác nhận` })
             .setTimestamp();
 
-        if (qrImageUrl) {
-            try { embed.setImage(new URL(qrImageUrl).href); } catch (e) { /* bỏ qua URL lỗi */ }
-        }
+        const qrImg = await prepareQrImage(qrImageUrl, { ticket: ticketChannel.id });
+        if (qrImg.imageUrl) embed.setImage(qrImg.imageUrl);
 
         // Ticket chỉ đóng khi Staff/Owner gõ .close (không còn nút Close, khách không tự đóng được)
         const ticketRow = new ActionRowBuilder().addComponents(
@@ -467,11 +494,19 @@ async function handleBuy(interaction) {
                 .setLabel('Confirm').setEmoji('✅').setStyle(ButtonStyle.Success)
         );
 
-        await ticketChannel.send({
+        const ticketMsg = {
             content: `👋 <@${buyer.id}> đã tạo đơn mua tài khoản từ <@${sellerId || ownerId}>!`,
             embeds: [embed],
             components: [ticketRow]
-        });
+        };
+        try {
+            await ticketChannel.send({ ...ticketMsg, files: qrImg.files });
+        } catch (sendErr) {
+            // Gửi kèm file lỗi (vd thiếu quyền đính kèm): gửi lại bằng link ảnh trực tiếp để khách vẫn thấy QR
+            log.warn('QR', 'Gửi ticket kèm ảnh QR lỗi, thử lại bằng link', { loi: sendErr.message, ticket: ticketChannel.id });
+            if (qrImg.files.length && qrImageUrl) { try { embed.setImage(new URL(qrImageUrl).href); } catch (e) { embed.setImage(null); } }
+            await ticketChannel.send(ticketMsg);
+        }
 
         await interaction.editReply({ content: `✅ Đã tạo kênh ticket cho bạn: <#${ticketChannel.id}>` });
     } catch (err) {
@@ -637,7 +672,7 @@ async function handleConfirm(interaction) {
     }
 
     // Gửi bill vào kênh BILL_ID
-    const billId = cfg('BILL_ID', interaction.guild) || process.env.BILL_Id;
+    const billId = cfg('BILL_ID', interaction.guild) || process.env.BILL_ID;
     if (billId && isValidSnowflake(billId.trim())) {
         try {
             const billChannel = await client.channels.fetch(billId.trim()).catch(() => null);
@@ -773,7 +808,7 @@ async function checkCanClose({ channelId, userId, member }) {
         return { ok: false, msg: '❌ **Từ chối:** Chỉ Staff hoặc Owner mới được đóng ticket (gõ `.close`).' };
     }
     // Chưa giao được thông tin cho khách thì không cho đóng (tránh mất tài khoản đã bán). Owner được đóng cưỡng bức.
-    if (ticket.confirmed && ticket.delivery === 'pending' && !isOwnerId(userId)) {
+    if (ticket.confirmed && ticket.delivery === 'pending' && !isOwnerId(userId, member?.guild)) {
         return {
             ok: false,
             msg: '⚠️ Chưa gửi được thông tin tài khoản cho khách! Hãy bấm **Gửi lại thông tin** (hoặc gõ `.resend`) hoặc bàn giao thủ công trước khi đóng (Owner có thể đóng cưỡng bức).'
@@ -782,7 +817,19 @@ async function checkCanClose({ channelId, userId, member }) {
     return { ok: true };
 }
 
+// Kênh có chữ "ticket" trong tên (ticket mua acc, ticket tạo từ .panel...) đều đóng được bằng .close, kể cả không có trong DB
+const isTicketNamed = (channel) => /ticket/i.test(channel?.name || '');
+
 async function handleCloseCommand(message) {
+    const inDb = await db.getTicket(message.channel.id);
+    if (!inDb) {
+        if (!isTicketNamed(message.channel)) return;   // không phải ticket: bỏ qua, không làm phiền chat thường
+        if (!checkStaffOrOwner(message.member)) {
+            return await message.reply({ content: '❌ **Từ chối:** Chỉ Staff hoặc Owner mới được đóng ticket (gõ `.close`).' }).catch(() => null);
+        }
+        await message.channel.send({ content: '🔒 Kênh ticket này đã được đóng và sẽ xoá sau 5 giây...' }).catch(() => null);
+        return await closeTicketChannel(message.channel, message.author);
+    }
     const check = await checkCanClose({ channelId: message.channel.id, userId: message.author.id, member: message.member });
     if (!check.ok) return await message.reply({ content: check.msg }).catch(() => null);
     await message.channel.send({ content: '🔒 Kênh ticket này đã được đóng và sẽ xoá sau 5 giây...' }).catch(() => null);
@@ -806,9 +853,21 @@ const STAFF_RESTRICTED_COMMANDS = ['restock', 'leaderboard', 'set_qr', 'skin', '
 const OWNER_ONLY_COMMANDS = ['staff', 'config', 'set_kenhsold', 'owner'];
 
 async function handleInteraction(interaction) {
+    return db.withGuild(interaction.guildId || interaction.guild?.id, () => handleInteractionInner(interaction));
+}
+
+async function featureOff(interaction) {
+    const msg = { content: '❌ Tính năng này không có trong bot này.', flags: EPHEMERAL };
+    if (interaction.deferred || interaction.replied) return interaction.followUp(msg).catch(() => null);
+    return interaction.reply(msg).catch(() => null);
+}
+
+async function handleInteractionInner(interaction) {
     try {
+        if (interaction.guildId && !profile.guildAllowed(interaction.guildId)) return;   // ALLOWED_GUILD_IDS: bỏ qua server lạ
         if (interaction.isChatInputCommand()) {
-            if (OWNER_ONLY_COMMANDS.includes(interaction.commandName) && !isOwnerId(interaction.user?.id)) {
+            if (!profile.commandEnabled(interaction.commandName)) return await featureOff(interaction);
+            if (OWNER_ONLY_COMMANDS.includes(interaction.commandName) && !isOwnerId(interaction.user?.id, interaction.guild)) {
                 return await interaction.reply({
                     content: '❌ **Từ chối:** Lệnh này chỉ dành riêng cho Owner!',
                     flags: EPHEMERAL
@@ -828,6 +887,7 @@ async function handleInteraction(interaction) {
 
         if (interaction.isModalSubmit()) {
             if (interaction.customId === 'modal_add_acc') {
+                if (!profile.has('autobuy')) return await featureOff(interaction);
                 if (!checkStaffOrOwner(interaction.member)) {
                     return await interaction.reply({ content: '❌ Bạn không có quyền thêm tài khoản!', flags: EPHEMERAL });
                 }
@@ -871,6 +931,7 @@ async function handleInteraction(interaction) {
         }
 
         if (interaction.isStringSelectMenu?.() && isCategoryPicker(interaction.customId)) {
+            if (!profile.has('sold')) return await featureOff(interaction);
             return await handleCategoryPick(interaction);
         }
 
@@ -878,6 +939,7 @@ async function handleInteraction(interaction) {
             const customId = interaction.customId;
 
             if (customId === 'btn_refresh_leaderboard') {
+                if (!profile.has('bxh')) return await featureOff(interaction);
                 await interaction.update(await buildLeaderboardPayload(interaction.guild));
                 return;
             }
@@ -892,10 +954,11 @@ async function handleInteraction(interaction) {
             }
 
             if (customId === 'guide_how_to_buy') {
+                if (!profile.has('autobuy')) return await featureOff(interaction);
                 const guideEmbed = new EmbedBuilder()
                     .setColor('#00FFAA')
                     .setDescription(
-                        `# Cách mua tài khoản tại Drew Store  ✅\n` +
+                        `# Cách mua tài khoản tại ${profile.brand()}  ✅\n` +
                         `> Nếu bạn thấy tài khoản ưng ý hãy bấm **BUY** 🛒\n` +
                         `> Bot sẽ tự động tạo ticket giao dịch riêng cho bạn và Seller\n` +
                         `> Sau đó tiến hành chuyển khoản theo mã QR và nội dung chỉ định\n` +
@@ -905,6 +968,7 @@ async function handleInteraction(interaction) {
                 return await interaction.reply({ embeds: [guideEmbed], flags: EPHEMERAL });
             }
 
+            if (!profile.has('autobuy') && (isPanelButton(customId) || /^(buy_acc_|ticket_(confirm|resend|close)_)/.test(customId))) return await featureOff(interaction);
             if (isPanelButton(customId)) return await handlePanelButton(interaction, client);
             if (customId.startsWith('buy_acc_')) return await handleBuy(interaction);
             if (customId.startsWith('ticket_confirm_')) return await handleConfirm(interaction);
@@ -940,6 +1004,19 @@ function onLegitCooldown(userId, guildId = '') {
     if (legitCooldown.size > 5000) {
         for (const [id, t] of legitCooldown) if (Date.now() - t > waitMs) legitCooldown.delete(id);
     }
+    return false;
+}
+
+// Chống spam lệnh .bxh: 1 người / 1 server / BXH_COOLDOWN_SEC giây (mặc định 30)
+const BXH_COOLDOWN_SEC = Math.max(0, parseInt(process.env.BXH_COOLDOWN_SEC, 10) || 30);
+const bxhCooldown = new Map();
+function onBxhCooldown(userId, guildId) {
+    if (!BXH_COOLDOWN_SEC) return false;
+    const k = `${guildId}:${userId}`;
+    const t = Date.now();
+    if (t - (bxhCooldown.get(k) || 0) < BXH_COOLDOWN_SEC * 1000) return true;
+    bxhCooldown.set(k, t);
+    if (bxhCooldown.size > 2000) for (const [id, at] of bxhCooldown) if (t - at > BXH_COOLDOWN_SEC * 1000) bxhCooldown.delete(id);
     return false;
 }
 
@@ -1049,7 +1126,7 @@ async function scanLegitChannel(channel) {
 
     let last = null;
     for (const m of todo) {
-        await db.clearRemindersForBuyer(m.author.id).catch(() => null);
+        await db.withGuild(channel.guildId, () => db.clearRemindersForBuyer(m.author.id)).catch(() => null);
         const n = await reactLegit(m, { rename: false, source: 'quet-khoi-dong' });
         if (n !== null) last = n;
     }
@@ -1060,7 +1137,8 @@ async function scanLegitChannel(channel) {
 
 // Quét kênh legit của TẤT CẢ server (mỗi server 1 kênh). Kênh đặt bằng biến AUTOREACTER_VOUCH cũng được gắn vào đúng server.
 async function scanLegitChannels() {
-    const ids = new Set([...getLegitChannelMap().values()]);
+    // Chỉ quét kênh legit của server bot này đang ở và được phép phục vụ (bot kia dùng chung MongoDB thì kênh của nó bị bỏ qua)
+    const ids = new Set([...getLegitChannelMap()].filter(([gid]) => profile.guildAllowed(gid) && (!client.guilds.cache.size || client.guilds.cache.has(gid))).map(([, cid]) => cid));
     const fallback = cfg('AUTOREACTER_VOUCH');
     if (fallback) ids.add(fallback);
 
@@ -1111,7 +1189,7 @@ async function handleSoldMessage(message) {
         return true;
     }
 
-    const isOwner = isOwnerId(message.author.id);
+    const isOwner = isOwnerId(message.author.id, message.guild);
     if (account?.sellerId && !isOwner && message.author.id !== account.sellerId) {
         await message.reply({
             content: `❌ **Từ chối:** Kênh này do <@${account.sellerId}> tạo. Chỉ người tạo tài khoản này hoặc Owner mới có quyền dùng lệnh \`sold\`!`
@@ -1182,18 +1260,25 @@ async function handleSoldMessage(message) {
 }
 
 async function handleMessage(message) {
+    const guildId = message.guildId || message.guild?.id;
+    if (!guildId || message.author?.bot) return;
+    if (!profile.guildAllowed(guildId)) return;   // ALLOWED_GUILD_IDS: bỏ qua server lạ
+    return db.withGuild(guildId, () => handleMessageInner(message));
+}
+
+async function handleMessageInner(message) {
     try {
         if (!message.guild || message.author.bot) return;
 
         // 1. Lệnh trong ticket: .close (CHỈ Staff/Owner) và .resend. Ticket không bao giờ tự đóng.
-        if (db.isTicketChannel(message.channel.id)) {
+        if (profile.has('autobuy')) {
             const cmd = message.content.trim().toLowerCase();
-            if (cmd === '.close') return await handleCloseCommand(message);
-            if (cmd === '.resend') return await handleResendCommand(message);
+            if (cmd === '.close') return await handleCloseCommand(message);   // ticket trong DB hoặc kênh có chữ "ticket" trong tên
+            if (cmd === '.resend' && db.isTicketChannel(message.channel.id)) return await handleResendCommand(message);
         }
 
         // 2. Kênh legit của server: chỉ tin đúng mẫu "+1 legit <@người_bán> ..." mới được xử lý (react; server bật đếm thì +1 và đổi tên kênh).
-        {
+        if (profile.has('legit')) {
             const looksLegit = C.LEGIT_PATTERN.test(message.content || '');
             const lctx = { guild: message.guild.name, guildId: message.guild.id, channelId: message.channel.id, msgId: message.id, userId: message.author.id };
             if (isLegitChannel(message.guild.id, message.channel.id)) {
@@ -1226,12 +1311,12 @@ async function handleMessage(message) {
         }
 
         // 3. Lệnh tin nhắn "sold"
-        if (message.content.trim().toLowerCase() === 'sold') {
+        if (profile.has('sold') && message.content.trim().toLowerCase() === 'sold') {
             if (await handleSoldMessage(message)) return;
         }
 
         // 3a. .panel (Staff/Owner): đăng bảng chọn loại ticket kèm 5 nút
-        if (message.content.trim().toLowerCase() === '.panel') {
+        if (profile.has('autobuy') && message.content.trim().toLowerCase() === '.panel') {
             if (!checkStaffOrOwner(message.member)) {
                 return await message.reply({ content: '❌ Lệnh `.panel` chỉ dành cho Staff hoặc Owner!' }).catch(() => null);
             }
@@ -1244,7 +1329,7 @@ async function handleMessage(message) {
         // 3b. Lệnh tạo / xóa kênh (Staff/Owner): `.taokenh abc` / `taokenh abc`, `.xoakenh #kenh` / `.xoakenh <id>`
         {
             const raw = message.content.trim();
-            const mk = raw.match(/^(\.?)(taokenh|xoakenh)(?:\s+([\s\S]*))?$/i);
+            const mk = profile.has('sold') ? raw.match(/^(\.?)(taokenh|xoakenh)(?:\s+([\s\S]*))?$/i) : null;
             if (mk) {
                 const hasDot = mk[1] === '.';
                 const cmdName = mk[2].toLowerCase();
@@ -1273,7 +1358,7 @@ async function handleMessage(message) {
         }
 
         // 3c. Lệnh .done <@khách | id> <số tiền> [số đơn] (Staff/Owner): cộng doanh thu + cập nhật bảng xếp hạng
-        if (/^\.done(\s|$)/i.test(message.content.trim())) {
+        if (profile.has('bxh') && /^\.done(\s|$)/i.test(message.content.trim())) {
             if (!checkStaffOrOwner(message.member)) {
                 return await message.reply({ content: '❌ Lệnh `.done` chỉ dành cho Staff hoặc Owner!' }).catch(() => null);
             }
@@ -1297,8 +1382,25 @@ async function handleMessage(message) {
             return;
         }
 
+        // 3d. Lệnh .bxh (mọi người): xem bảng xếp hạng top khách mua nhiều nhất (đọc từ collection customers trong MongoDB)
+        if (profile.has('bxh') && /^\.bxh\s*$/i.test(message.content.trim())) {
+            // Chống spam: mỗi người chỉ gõ được 1 lần / BXH_COOLDOWN_SEC giây (Staff/Owner không bị chặn)
+            if (!checkStaffOrOwner(message.member) && onBxhCooldown(message.author.id, message.guild.id)) {
+                const warn = await message.reply({ content: `⏳ Bạn gõ \`.bxh\` nhanh quá, chờ ${BXH_COOLDOWN_SEC} giây rồi thử lại nhé!` }).catch(() => null);
+                if (warn) setTimeout(() => warn.delete().catch(() => null), 5000);
+                return;
+            }
+            try {
+                await message.channel.send(await buildLeaderboardPayload(message.guild));
+            } catch (err) {
+                console.warn('[LEADERBOARD] Lỗi lệnh .bxh:', err.message);
+                await message.reply({ content: '❌ Không lấy được bảng xếp hạng, thử lại sau nhé!' }).catch(() => null);
+            }
+            return;
+        }
+
         // 4. Lệnh .vietqr
-        if (/^\.vietqr\b/i.test(message.content.trim())) {
+        if (profile.has('autobuy') && /^\.vietqr\b/i.test(message.content.trim())) {
             if (!checkStaffOrOwner(message.member)) {
                 return await message.reply({ content: '❌ Lệnh `.vietqr` chỉ dành cho Staff hoặc Owner!' }).catch(() => null);
             }
@@ -1315,13 +1417,13 @@ async function handleMessage(message) {
 
             const staffQR = await db.getStaffQR(message.author.id);
             if (!staffQR || !staffQR.bankName || !staffQR.accountNumber) {
-                if (isOwnerId(message.author.id) && process.env.LINK_QR) {
+                if (isOwnerId(message.author.id, message.guild) && process.env.LINK_QR) {
                     const ownerEmbed = new EmbedBuilder()
                         .setTitle(`💳 THANH TOÁN: OWNER SHOP`)
                         .setColor('#00FFAA')
                         .setDescription(`💰 **Số tiền:** \`${amountText}\`\n📝 **Nội dung:** \`${note}\``)
                         .setImage(process.env.LINK_QR)
-                        .setFooter({ text: 'Drew Store AutoBuy' })
+                        .setFooter({ text: profile.current().name })
                         .setTimestamp();
                     return await message.channel.send({ embeds: [ownerEmbed] });
                 }
@@ -1341,12 +1443,17 @@ async function handleMessage(message) {
                     `💰 **Số tiền:** \`${amountText}\`\n` +
                     `📝 **Nội dung:** \`${note}\``
                 )
-                .setFooter({ text: 'Drew Store AutoBuy • VietQR' })
+                .setFooter({ text: `${profile.current().name} • VietQR` })
                 .setTimestamp();
-            if (qrImageUrl) {
-                try { qrEmbed.setImage(new URL(qrImageUrl).href); } catch (e) { /* bỏ qua URL lỗi */ }
+            const qrImg = await prepareQrImage(qrImageUrl, { lenh: '.vietqr', user: message.author.id });
+            if (qrImg.imageUrl) qrEmbed.setImage(qrImg.imageUrl);
+            try {
+                await message.channel.send({ embeds: [qrEmbed], files: qrImg.files });
+            } catch (sendErr) {
+                log.warn('QR', 'Gửi .vietqr kèm ảnh lỗi, thử lại bằng link', { loi: sendErr.message, kenh: message.channel.id });
+                if (qrImg.files.length && qrImageUrl) { try { qrEmbed.setImage(new URL(qrImageUrl).href); } catch (e) { qrEmbed.setImage(null); } }
+                await message.channel.send({ embeds: [qrEmbed] }).catch(err => log.warn('QR', 'Không gửi được .vietqr', { loi: err.message }));
             }
-            await message.channel.send({ embeds: [qrEmbed] });
             return;
         }
 
@@ -1445,7 +1552,7 @@ client.on(Events.GuildDelete || 'guildDelete', guild => log.warn('GUILD', 'Bot r
 
 client.on(Events.ChannelDelete || 'channelDelete', async channel => {
     try {
-        await handleCancelTicket(channel.id);
+        await db.withGuild(channel.guildId, () => handleCancelTicket(channel.id));
     } catch (err) {
         console.error('[LỖI CHANNEL DELETE TICKET]:', err);
     }
@@ -1467,11 +1574,12 @@ client.once(Events.ClientReady || 'ready', async () => {
         console.error('❌ Lỗi khi nạp Slash Commands:', err);
     }
 
-    await reconcileOnStartup();
+    log.info('READY', `Chế độ bot: ${profile.current().id}`, { autobuy: profile.has('autobuy'), sold: profile.has('sold'), bxh: profile.has('bxh'), legit: profile.has('legit'), dem_legit: profile.forcedLegitCount() ?? 'theo /config legit_dem', chi_server: profile.allowedGuilds().join(',') || '(tất cả)' });
+    if (profile.has('autobuy')) await reconcileOnStartup();
     for (const g of client.guilds.cache.values()) await logGuildDiagnostics(g);
-    await scanLegitChannels().catch(err => console.error('[LỖI QUÉT LEGIT]:', err));
-    await refreshLeaderboardMessage(client).catch(() => null);   // bảng xếp hạng luôn khớp dữ liệu sau mỗi lần khởi động
-    setInterval(() => runVouchReminders().catch(err => console.error('[Lỗi quét nhắc vouch]:', err.message)), 60_000);
+    if (profile.has('legit')) await scanLegitChannels().catch(err => console.error('[LỖI QUÉT LEGIT]:', err));
+    if (profile.has('bxh')) await refreshLeaderboardMessage(client).catch(() => null);   // bảng xếp hạng luôn khớp dữ liệu sau mỗi lần khởi động
+    if (profile.has('autobuy')) setInterval(() => runVouchReminders().catch(err => console.error('[Lỗi quét nhắc vouch]:', err.message)), 60_000);
 });
 
 function assertConfig() {
