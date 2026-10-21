@@ -72,6 +72,16 @@ async function runScenario(profileId) {
     reset(); await bot.handleMessage(mkMsg('.done <@999999999999999999> 150k', plain)); out.doneAnyChannel = snap();
     reset(); await bot.handleMessage(mkMsg('.done <@999999999999999999> 50k', plain)); out.doneAnyChannel2 = snap();
     out.customer = await db.getCustomer('999999999999999999');
+    const { setOverride } = require('../utils/runtime');
+    setOverride(`TRANSCRIPT_ID@${GUILD}`, '444444444444444401');
+    const sysTicket = mkChannel('444444444444444401', 'ticket-transcripts');
+    reset(); await bot.handleMessage(mkMsg('.close', sysTicket)); out.closeProtected = snap();
+    reset(); await bot.handleMessage(mkMsg('.done <@999999999999999999> 999.999.999', plain)); out.doneTooBig = snap();
+    out.afterTooBig = await db.getCustomer('999999999999999999');
+    const replies = []; const ow = mkMsg('.nhapbxh\n<@999999999999999999> 2.000.000\n<@999999999999999998> 900.000.000', plain);
+    ow.reply = async (x) => { replies.push(x.content || ''); calls.reply++; return { delete: async () => {} }; };
+    await bot.handleMessage(ow); out.importOverwrite = replies.join('\n');
+    out.afterImport = await db.getCustomer('999999999999999999'); out.skippedBig = await db.getCustomer('999999999999999998');
     const imp = '.nhapbxh\n<:e:1546837411345080362> **#1** <@867617837278167040> <:m:1546837446489014312> **5.346.010đ**\n`#2` **#2** <@917730708670259242> <:m:1546837446489014312> **4.740.000đ**';
     reset(); await bot.handleMessage(mkMsg(imp, plain)); out.import1 = snap();
     reset(); await bot.handleMessage(mkMsg(imp, plain)); out.import2 = snap();   // nhập lại lần 2
@@ -134,6 +144,16 @@ t('.nhapbxh (Owner): nhập bảng từ dòng có emoji, đặt tổng chính x�
 });
 t('.close: kênh có chữ "ticket" trong tên (không cần có trong DB) → Staff đóng được', () => {
     for (const r of [drew, cartone]) assert.ok(r.closeTicketName.send >= 1, 'phải gửi thông báo đóng');
+});
+t('.close không xóa kênh hệ thống dù tên có chữ ticket; .done / .nhapbxh chặn số tiền quá lớn và hiện giá trị cũ khi ghi đè', () => {
+    for (const r of [drew, cartone]) {
+        assert.strictEqual(r.closeProtected.send, 0, 'không được gửi thông báo đóng');
+        assert.ok(r.closeProtected.reply <= 1);
+        assert.strictEqual(r.afterTooBig.totalSpent, 300000, '.done 999tr phải bị từ chối');
+        assert.strictEqual(r.afterImport.totalSpent, 2000000);
+        assert.ok(r.importOverwrite.includes('300.000') && r.importOverwrite.includes('2.000.000') && r.importOverwrite.includes('vượt mức tối đa'), r.importOverwrite);
+        assert.strictEqual(r.skippedBig, null);
+    }
 });
 t('.close: kênh thường thì bỏ qua; người thường ở kênh ticket bị từ chối', () => {
     for (const r of [drew, cartone]) {

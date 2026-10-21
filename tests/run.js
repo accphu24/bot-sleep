@@ -193,6 +193,16 @@ const msgFor = (channel, authorId, content, member) => {
         const rs = await Promise.all(Array.from({ length: 5 }, () => db.claimAccount('race1', {})));
         assert.equal(rs.filter(Boolean).length, 1);
     });
+    await test('1 khách bấm BUY nhiều acc cùng lúc: chỉ xử lý 1 lượt, không vượt giới hạn đơn mở', async () => {
+        const A = await seedAccount('lock1'), B = await seedAccount('lock2');
+        const before = guild.channels.created.length;
+        const [x, y] = await Promise.all([
+            buy('lock1', '800000000000000077', A.cardCh, A.cardMsg),
+            buy('lock2', '800000000000000077', B.cardCh, B.cardMsg)
+        ]);
+        assert.equal(guild.channels.created.length - before, 1, 'phải đúng 1 ticket');
+        assert.equal([lastText(x), lastText(y)].filter(t => t.includes('đang được tạo')).length, 1);
+    });
     await test('2 khách bấm BUY cùng lúc: chỉ tạo 1 ticket, người kia được báo', async () => {
         const { cardCh, cardMsg } = await seedAccount('race2');
         const before = guild.channels.created.length;
@@ -243,7 +253,7 @@ const msgFor = (channel, authorId, content, member) => {
         assert.equal(cardCh.parentSet, SOLD_CAT);
         assert.equal(db.isTicketChannel(ticketCh.id), true);
         assert.equal(registry.size > 0, true);
-        const reminder = FakeMongoClient.last.db().collection('reminders').docs[0];
+        const reminder = FakeMongoClient.last.db('autobuy').collection('reminders').docs[0];
         assert.ok(reminder && reminder.buyerId === buyer1.id, 'phải có lịch nhắc vouch');
     });
     await test('Confirm lần 2 bị chặn, doanh thu KHÔNG bị cộng thêm', async () => {
@@ -455,7 +465,7 @@ const msgFor = (channel, authorId, content, member) => {
         await buy('rem0', buyer.id, cardCh, cardMsg);
         const ticketCh = guild.channels.created.at(-1).ch;
         await index.handleInteraction(buttonInteraction({ customId: 'ticket_confirm_rem0', user: { id: SELLER }, member: staffMember(), channel: ticketCh }));
-        const col = FakeMongoClient.last.db().collection('reminders');
+        const col = FakeMongoClient.last.db('autobuy').collection('reminders');
         assert.ok(col.docs.some(d => d.buyerId === buyer.id));
         await index.handleMessage(msgFor(registry.get(LEGIT_CH), buyer.id, `+1 legit <@${SELLER}> mfa`));
         assert.ok(!col.docs.some(d => d.buyerId === buyer.id));
@@ -512,7 +522,7 @@ const msgFor = (channel, authorId, content, member) => {
     await test('nhắc vouch: gửi đúng 3 lần rồi dừng, không spam', async () => {
         const u = makeUser('800000000000000009');
         await db.scheduleVouchReminder({ channelId: 'remtest', buyerId: u.id, sellerId: SELLER, username: 'x' }, -1000);
-        const col = FakeMongoClient.last.db().collection('reminders');
+        const col = FakeMongoClient.last.db('autobuy').collection('reminders');
         for (let i = 0; i < 6; i++) {
             await index.runVouchReminders();
             const d = col.docs.find(r => r._id === 'remtest');

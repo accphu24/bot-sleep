@@ -304,7 +304,18 @@ async function reconcileOnStartup() {
 // ==========================================
 // INTERACTION: NÚT BUY (giữ chỗ nguyên tử để không bao giờ bán trùng)
 // ==========================================
+// Mỗi người chỉ xử lý 1 lượt BUY tại một thời điểm: bấm nhiều nút cùng lúc không vượt được giới hạn MAX_OPEN_TICKETS
+const buyingNow = new Set();
 async function handleBuy(interaction) {
+    const lockKey = `${interaction.guildId}:${interaction.user.id}`;
+    if (buyingNow.has(lockKey)) {
+        return await interaction.reply({ content: '⏳ Bạn đang có một đơn đang được tạo, vui lòng đợi vài giây rồi thử lại!', flags: EPHEMERAL }).catch(() => null);
+    }
+    buyingNow.add(lockKey);
+    try { return await handleBuyInner(interaction); } finally { buyingNow.delete(lockKey); }
+}
+
+async function handleBuyInner(interaction) {
     const username = interaction.customId.replace('buy_acc_', '').toLowerCase();
     const ownerId = process.env.OWNER_ID;
     const staffRoleId = cfg('STAFF_ROLE_ID', interaction.guild);
@@ -471,7 +482,7 @@ async function handleBuy(interaction) {
                 `📝 **Nội dung CK:** \`${transferMemo}\`\n\n` +
                 `⚠ Người bán (<@${sellerId || ownerId}>) chưa cài đặt mã QR ngân hàng bằng lệnh \`/set_qr\`! Vui lòng gửi STK trực tiếp tại đây.`;
         }
-        log.info('QR', 'Chọn nguồn QR cho ticket', { nguon: qrSource, nguoiBan: targetSellerId, coAnh: !!qrImageUrl, url: qrImageUrl || undefined });
+        log.info('QR', 'Chọn nguồn QR cho ticket', { nguon: qrSource, nguoiBan: targetSellerId, coAnh: !!qrImageUrl });
 
         const embed = new EmbedBuilder()
             .setTitle(`🛒 ĐƠN MUA TÀI KHOẢN: ${account.username.toUpperCase()}`)
@@ -821,10 +832,24 @@ async function checkCanClose({ channelId, userId, member }) {
 // Kênh có chữ "ticket" trong tên (ticket mua acc, ticket tạo từ .panel...) đều đóng được bằng .close, kể cả không có trong DB
 const isTicketNamed = (channel) => /ticket/i.test(channel?.name || '');
 
+// Kênh hệ thống đã cấu hình (transcript, bill, kho, legit, hướng dẫn...) hoặc nằm trong danh mục kho / sold: KHÔNG bao giờ đóng bằng tên
+function isProtectedChannel(guild, channel) {
+    const keys = ['TRANSCRIPT_ID', 'BILL_ID', 'STOCK_ID', 'AUTOREACTER_VOUCH', 'KENH_VOUCH', 'KENH_YOUTUBE', 'KENH_2FA', 'KENH_LOCK'];
+    const ids = new Set(keys.map(k => String(cfg(k, guild) || '').trim()).filter(Boolean));
+    if (ids.has(channel.id) || (channel.parentId && ids.has(channel.parentId))) return true;
+    const soldCat = String(cfg('SOLD_CATEGORY_ID', guild) || '').trim();
+    if (soldCat && channel.parentId === soldCat) return true;
+    return isLegitChannel(guild.id, channel.id);
+}
+
 async function handleCloseCommand(message) {
     const inDb = await db.getTicket(message.channel.id);
     if (!inDb) {
         if (!isTicketNamed(message.channel)) return;   // không phải ticket: bỏ qua, không làm phiền chat thường
+        if (isProtectedChannel(message.guild, message.channel)) {
+            if (checkStaffOrOwner(message.member)) await message.reply({ content: '🛡️ Đây là kênh hệ thống (transcript / bill / kho / legit...), bot **không đóng** bằng `.close`.' }).catch(() => null);
+            return;
+        }
         if (!checkStaffOrOwner(message.member)) {
             return await message.reply({ content: '❌ **Từ chối:** Chỉ Staff hoặc Owner mới được đóng ticket (gõ `.close`).' }).catch(() => null);
         }
@@ -1394,9 +1419,21 @@ async function handleMessageInner(message) {
             if (!rows.length) {
                 return await message.reply({ content: '⚠️ **Cú pháp:** `.nhapbxh` rồi xuống dòng, mỗi dòng 1 khách: `@khách 5.346.010đ` (dán thẳng bảng xếp hạng cũng được; quá 2000 ký tự thì chia làm nhiều tin).' }).catch(() => null);
             }
-            for (const r of rows) await db.setCustomerTotal(r.id, r.amount);
-            log.info('BXH', 'Nhập bảng xếp hạng', { guild: message.guild.id, so_khach: rows.length, by: message.author.id });
-            await message.reply({ content: `✅ Đã nhập **${rows.length}** khách vào bảng xếp hạng của server này (tổng ${formatVND(rows.reduce((a, r) => a + r.amount, 0))}).` + (bad.length ? `\n⚠️ Bỏ qua ${bad.length} dòng không đọc được: ${bad.map(b => `\`${b}\``).join(', ')}` : '') }).catch(() => null);
+            const maxAmount = parseInt(process.env.DONE_MAX_AMOUNT, 10) || 100_000_000;
+            const tooBig = rows.filter(r => r.amount > maxAmount);
+            const okRows = rows.filter(r => r.amount <= maxAmount);
+            const changes = [];   // giá trị cũ -> mới, để Owner khôi phục được nếu nhập nhầm (nhập lại số cũ bằng chính lệnh này)
+            for (const r of okRows) {
+                const before = (await db.getCustomer(r.id))?.totalSpent ?? 0;
+                await db.setCustomerTotal(r.id, r.amount);
+                if (before !== r.amount) changes.push({ id: r.id, before, after: r.amount });
+            }
+            log.info('BXH', 'Nhập bảng xếp hạng', { guild: message.guild.id, so_khach: okRows.length, by: message.author.id, thay_doi: changes.map(c => `${c.id}:${c.before}->${c.after}`).join(' ') });
+            const changedWithOld = changes.filter(c => c.before > 0);
+            await message.reply({ content: `✅ Đã nhập **${okRows.length}** khách vào bảng xếp hạng của server này (tổng ${formatVND(okRows.reduce((a, r) => a + r.amount, 0))}).` +
+                (changedWithOld.length ? `\n🔁 Đã ghi đè ${changedWithOld.length} khách có số cũ (lưu trong log): ${changedWithOld.slice(0, 8).map(c => `<@${c.id}> ${formatVND(c.before)}→${formatVND(c.after)}`).join(', ')}${changedWithOld.length > 8 ? '…' : ''}` : '') +
+                (tooBig.length ? `\n⚠️ Bỏ qua ${tooBig.length} dòng vượt mức tối đa ${formatVND(maxAmount)} (nghi gõ thừa số 0).` : '') +
+                (bad.length ? `\n⚠️ Bỏ qua ${bad.length} dòng không đọc được: ${bad.map(b => `\`${b}\``).join(', ')}` : ''), allowedMentions: { parse: [] } }).catch(() => null);
             await refreshLeaderboardMessage(client).catch(err => console.warn('[LEADERBOARD] Không cập nhật được:', err.message));
             return;
         }

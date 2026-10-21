@@ -74,5 +74,11 @@ t('.help: cả hai có đủ lệnh auto buy + bxh; khác nhau ở phần đếm
     assert.ok(drew.includes('không đếm số legit') && cartone.includes('luôn **đếm số legit**'));
 });
 
+t('log QR không lộ số tài khoản', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'utils', 'vietqr.js'), 'utf8') + fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
+    assert.ok(!/coAnh: !!qrImageUrl, url:/.test(src), 'log chọn nguồn QR không được kèm url');
+    assert.ok(!/url: href/.test(src), 'log lỗi QR phải dùng safeUrl');
+});
+
 console.log(`\n${pass}/${pass + fail} kiểm thử chế độ bot đạt${fail ? `, ${fail} LỖI` : ''}`);
 process.exit(fail ? 1 : 0);

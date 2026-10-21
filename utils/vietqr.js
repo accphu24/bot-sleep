@@ -50,12 +50,17 @@ function buildVietQRUrl(bankName, accountNumber, amount, memo, accountName) {
 
 // Tải ảnh QR về từ phía bot rồi đính kèm thẳng vào tin nhắn (không phụ thuộc việc Discord có tải được link ngoài hay không).
 // Trả về { files, imageUrl }: files để đưa vào message.send; imageUrl để embed.setImage. Tải lỗi thì rơi về dùng link trực tiếp.
+// Che số tài khoản / nội dung trong URL trước khi ghi log (URL VietQR chứa STK, tên chủ TK, số tiền)
+function safeUrl(u) {
+    try { const x = new URL(u); return `${x.origin}${x.pathname.replace(/\d{5,}/g, d => '***' + d.slice(-3))}`; } catch (e) { return '(url không hợp lệ)'; }
+}
+
 async function prepareQrImage(url, ctx = {}) {
     if (!url) return { files: [], imageUrl: null };
     let href;
     try { href = new URL(url).href; }
     catch (e) {
-        log.warn('QR', 'URL ảnh QR không hợp lệ', { url, loi: e.message, ...ctx });
+        log.warn('QR', 'URL ảnh QR không hợp lệ', { loi: e.message, ...ctx });
         return { files: [], imageUrl: null };
     }
     try {
@@ -64,9 +69,9 @@ async function prepareQrImage(url, ctx = {}) {
         if (res.status === 200 && type.startsWith('image/') && res.data?.length > 0) {
             return { files: [new AttachmentBuilder(Buffer.from(res.data), { name: 'qr.png' })], imageUrl: 'attachment://qr.png' };
         }
-        log.warn('QR', 'VietQR không trả về ảnh hợp lệ (kiểm tra mã ngân hàng / số tài khoản)', { status: res.status, type, url: href, ...ctx });
+        log.warn('QR', 'VietQR không trả về ảnh hợp lệ (kiểm tra mã ngân hàng / số tài khoản)', { status: res.status, type, url: safeUrl(href), ...ctx });
     } catch (e) {
-        log.warn('QR', 'Không tải được ảnh VietQR từ máy chủ bot', { loi: e.message, url: href, ...ctx });
+        log.warn('QR', 'Không tải được ảnh VietQR từ máy chủ bot', { loi: e.message, url: safeUrl(href), ...ctx });
     }
     return { files: [], imageUrl: href };
 }

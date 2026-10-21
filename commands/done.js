@@ -12,6 +12,9 @@ async function processDone({ channelId, customerId, amountText, orders = 1, user
     const amount = parseAmount(amountText);
     if (amount <= 0) return { ok: false, msg: '❌ Số tiền không hợp lệ! Vui lòng nhập số tiền lớn hơn 0.' };
     const ordersCount = Number.isInteger(orders) && orders >= 1 ? orders : 1;
+    // Chặn gõ thừa số 0: vượt trần thì từ chối (đổi trần bằng biến DONE_MAX_AMOUNT, mặc định 100.000.000đ)
+    const maxAmount = parseInt(process.env.DONE_MAX_AMOUNT, 10) || 100_000_000;
+    if (amount > maxAmount) return { ok: false, msg: `❌ Số tiền **${formatVND(amount)}** vượt mức tối đa cho một lần ghi (${formatVND(maxAmount)}). Kiểm tra lại số 0, hoặc chia thành nhiều lần / nhờ Owner đổi \`DONE_MAX_AMOUNT\`.` };
 
     // Chống cộng trùng: mỗi ticket chỉ được ghi doanh thu ĐÚNG 1 lần (dùng chung cờ với nút Confirm).
     // Ticket đã Confirm nhưng doanh thu CHƯA ghi (Confirm bị lỗi giữa chừng, hoặc đơn 0đ) thì vẫn cộng được.
@@ -33,7 +36,7 @@ async function processDone({ channelId, customerId, amountText, orders = 1, user
         return { ok: false, msg: `❌ Không ghi được doanh thu: ${err.message}. Hãy thử lại.` };
     }
 
-    log.info('DONE', 'Ghi doanh thu thủ công', { customerId, amount, orders: ordersCount, tong: updated.totalSpent, by: user?.id, channelId });
+    log.info('DONE', 'Ghi doanh thu thủ công', { customerId, amount, orders: ordersCount, truoc: updated.totalSpent - amount, tong: updated.totalSpent, by: user?.id, channelId });
 
     // Cấp role theo mốc chi tiêu (lỗi ở đây không làm hỏng việc ghi doanh thu)
     let milestoneLines = [];
