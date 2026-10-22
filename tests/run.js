@@ -193,6 +193,40 @@ const msgFor = (channel, authorId, content, member) => {
         const rs = await Promise.all(Array.from({ length: 5 }, () => db.claimAccount('race1', {})));
         assert.equal(rs.filter(Boolean).length, 1);
     });
+    await test('QR lưu theo từng người gõ /set_qr; ticket dùng QR của đúng người bán, người chưa cài không dùng nhầm QR người khác', async () => {
+        const setQr = require(path.join(root, 'commands/set_qr'));
+        const S1 = '800000000000000101', S2 = '800000000000000102', S3 = '800000000000000103';
+        const run = async (uid, bank, acc, name) => {
+            const it = { member: makeMember(uid, [STAFF_ROLE]), user: { id: uid }, replies: [],
+                options: { getString: (k) => ({ bank_name: bank, account_number: acc, bank_type: name }[k]) },
+                async reply(x) { this.replies.push(x); } };
+            await setQr.execute(it);
+            assert.ok(JSON.stringify(it.replies).includes('thành công'));
+        };
+        await run(S1, 'MB', '1111111111', 'SELLER ONE');
+        await run(S2, 'VCB', '2222222222', 'SELLER TWO');
+        assert.equal((await db.getStaffQR(S1)).accountNumber, '1111111111');
+        assert.equal((await db.getStaffQR(S2)).accountNumber, '2222222222');
+        assert.equal(await db.getStaffQR(S3), null);
+        const mk = async (name, sellerId) => {
+            const cardCh = makeChannel('✅・190k・3-cape', { parentId: STOCK_CAT });
+            const cardMsg = makeCardMessage(name); cardCh.cardMsg = cardMsg;
+            await db.upsertAccount({ username: name, capes: 'x', price: '190k', rank: 'MVP', sellerId, status: 'AVAILABLE', cardChannelId: cardCh.id, cardMessageId: cardMsg.id },
+                { password: 'pw', primaryEmail: 'a@b.c', securityEmail: 's@b.c', recoveryCode: 'rc', secretKey: 'sk' });
+            return { cardCh, cardMsg };
+        };
+        const ticketText = async (name, sellerId, buyerId) => {
+            const { cardCh, cardMsg } = await mk(name, sellerId);
+            await buy(name, buyerId, cardCh, cardMsg);
+            return JSON.stringify(guild.channels.created.at(-1).ch.sent);
+        };
+        const t1 = await ticketText('qrsel1', S1, '800000000000000201');
+        const t2 = await ticketText('qrsel2', S2, '800000000000000202');
+        const t3 = await ticketText('qrsel3', S3, '800000000000000203');
+        assert.ok(t1.includes('1111111111') && !t1.includes('2222222222'), 'acc của seller 1 phải ra QR seller 1');
+        assert.ok(t2.includes('2222222222') && !t2.includes('1111111111'), 'acc của seller 2 phải ra QR seller 2');
+        assert.ok(!t3.includes('1111111111') && !t3.includes('2222222222'), 'seller chưa cài QR không được dùng QR của người khác');
+    });
     await test('1 khách bấm BUY nhiều acc cùng lúc: chỉ xử lý 1 lượt, không vượt giới hạn đơn mở', async () => {
         const A = await seedAccount('lock1'), B = await seedAccount('lock2');
         const before = guild.channels.created.length;

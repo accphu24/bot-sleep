@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node index.js",
     "migrate": "node scripts/migrate-json-to-mongo.js",
-    "test": "node tests/run.js && node tests/milestones.test.js && node tests/guild-isolation.test.js && node tests/permissions-guild.test.js && node tests/profile.test.js && node tests/profile-behavior.test.js",
+    "test": "node tests/run.js && node tests/milestones.test.js && node tests/guild-isolation.test.js && node tests/permissions-guild.test.js && node tests/profile.test.js && node tests/profile-behavior.test.js && node tests/version.test.js",
     "start:drew": "BOT_PROFILE=drew node index.js",
     "start:cartone": "BOT_PROFILE=cartone node index.js"
   },

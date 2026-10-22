@@ -32,6 +32,7 @@ const { stickyCache } = require('./utils/cache');
 const { buildHelpEmbed } = require('./utils/help');
 const profile = require('./utils/profile');
 const { parseBxhText } = require('./utils/bxhImport');
+const { syncBotVersion } = require('./utils/version');
 const { isPanelButton, buildPanelPayload, handlePanelButton } = require('./utils/panel');
 const { buildLeaderboardPayload, refreshLeaderboardMessage } = require('./commands/leaderboard');
 const { processDone } = require('./commands/done');
@@ -1621,6 +1622,8 @@ client.once(Events.ClientReady || 'ready', async () => {
         bot: client.user.tag, so_server: client.guilds.cache.size, log_level: process.env.LOG_LEVEL || 'debug',
         servers: [...client.guilds.cache.values()].map(g => `${g.name}(${g.id})`).join(' | ')
     });
+
+    await syncBotVersion(client).catch(err => log.warn('VERSION', 'Không cập nhật được mô tả version', { loi: err.message }));
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {

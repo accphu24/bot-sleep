@@ -26,6 +26,7 @@ Cùng một code, mỗi server một bot riêng (token riêng), chọn bằng bi
 - **Sao lưu `DATA_ENCRYPTION_KEY`** ở nơi an toàn (trình quản lý mật khẩu, ngoài Railway). Mất khóa là mất toàn bộ thông tin đăng nhập acc trong kho; đổi khóa thì acc cũ không giải mã được. Cả 2 bot phải dùng cùng một khóa.
 - `DONE_MAX_AMOUNT` (mặc định 100000000): số tiền tối đa cho một lần `.done` / `/done` / dòng `.nhapbxh`, chặn gõ thừa số 0.
 - `.close` chỉ đóng kênh có chữ `ticket` trong tên **và** không phải kênh hệ thống đã cấu hình (transcript, bill, kho, legit, hướng dẫn, danh mục sold).
+- **Version tự tăng:** mỗi lần bot khởi động với code đã đổi (index.js, utils/, commands/, package.json) thì version tăng 0.1 và bot tự ghi vào **mô tả** của mình (`version: 1.3`, hiện ở phần About Me của bot). Restart hoặc deploy lại cùng code thì không tăng; chỉ sửa README / test cũng không tăng. Version lưu trong MongoDB nên 2 bot dùng chung DB luôn cùng số và chỉ tăng đúng 1 lần dù khởi động cùng lúc. Biến tùy chọn: `VERSION_STEP` (mặc định `0.1`, đặt `1` để tăng 1), `VERSION_START` (số khởi đầu khi DB chưa có, mặc định `1`), `VERSION_DESCRIPTION=off` (tắt).
 - `npm test` có thêm `tests/profile.test.js` và `tests/profile-behavior.test.js` (mô phỏng tin nhắn cho từng chế độ).
 
 ## Cài đặt

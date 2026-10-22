@@ -293,6 +293,27 @@ async function saveSetting(k, value) {
     return true;
 }
 
+// Version của bot (dùng chung cho các bot cùng MongoDB): tăng `step` (phần mười) khi dấu vân tay code đổi.
+// So sánh-và-đặt nguyên tử nên 2 bot khởi động cùng lúc chỉ tăng đúng 1 lần.
+async function resolveBotVersion({ fingerprint, step = 1, start = 10 }) {
+    const c = col('settings');
+    const KEY = 'BOT_VERSION';
+    const cur = await c.findOne({ _id: KEY });
+    if (!cur || typeof cur.tenths !== 'number') {
+        await c.updateOne({ _id: KEY }, { $set: { tenths: start, fingerprint, updatedAt: now() } }, { upsert: true });
+        return { tenths: start, bumped: false };
+    }
+    if (cur.fingerprint === fingerprint) return { tenths: cur.tenths, bumped: false };
+    const won = await c.findOneAndUpdate(
+        { _id: KEY, fingerprint: cur.fingerprint },
+        { $set: { fingerprint, updatedAt: now() }, $inc: { tenths: step } },
+        { returnDocument: 'after' }
+    );
+    if (won) return { tenths: won.tenths, bumped: true };
+    const latest = await c.findOne({ _id: KEY });   // bot khác đã tăng trước
+    return { tenths: latest?.tenths ?? cur.tenths, bumped: false };
+}
+
 async function getSettingsWithPrefix(prefix) {
     const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const docs = await col('settings').find({ _id: { $regex: `^${escaped}` } }).toArray();
@@ -394,7 +415,7 @@ module.exports = {
     connect, close, withGuild, currentGuildId, knownGuildIds, MAIN_GUILD_ID,
     getAccount, findAccounts, findAccountByCardChannel, upsertAccount, updateAccount,
     claimAccount, releaseAccount, markAccountSold, getAccountCredentials, wipeCredentials,
-    getStaffQR, saveStaffQR,
+    getStaffQR, saveStaffQR, resolveBotVersion,
     getTicket, isTicketChannel, saveTicket, updateTicket, deleteTicket, listTickets, getTicketByUsername, lockTicketConfirm, markTicketRevenue, countOpenTicketsByBuyer,
     getSetting, saveSetting, getSettingsWithPrefix, nextLegitNumber,
     recordCustomerPurchase, setCustomerTotal, getCustomer, getAllCustomers, getTopCustomers,
